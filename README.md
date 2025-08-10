@@ -30,7 +30,19 @@ The MoL system consists of:
 4. **MoL Runtime**: Orchestrates the entire fusion process
 5. **Training Pipeline**: Fine-tune adapters and routers for optimal performance
 
-## Quick Start
+## Examples
+
+### Running the Comprehensive Demo
+```bash
+# Basic inference demonstration
+python examples/comprehensive_demo.py --inference-only --small-models
+
+# Full demo with training and evaluation  
+python examples/comprehensive_demo.py --train --eval --small-models
+
+# Large model demonstration
+python examples/comprehensive_demo.py --train --eval
+```
 
 ### Basic Layer Fusion
 ```python
@@ -85,6 +97,21 @@ trainer = MoLTrainer(mol, train_config)
 
 # Train the system
 trainer.train(train_dataloader, eval_dataloader)
+```
+
+### Individual Component Usage
+```python
+# Using adapters directly
+from mol.core.adapters import LinearAdapter, BottleneckAdapter
+
+linear_adapter = LinearAdapter(512, 768, init_identity=True)
+bottleneck_adapter = BottleneckAdapter(512, 768, bottleneck_dim=128)
+
+# Using routers directly  
+from mol.core.routers import SimpleRouter, TokenLevelRouter
+
+simple_router = SimpleRouter(768, num_experts=3, pooling_type="mean")
+token_router = TokenLevelRouter(768, num_experts=3, top_k=2)
 ```
 
 ## Installation
