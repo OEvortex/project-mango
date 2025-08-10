@@ -56,8 +56,12 @@ class LinearAdapter(BaseAdapter):
     
     def _init_identity(self):
         """Initialize adapter to approximate identity mapping."""
-        if self.input_dim == self.output_dim:
-            # Perfect identity initialization
+        if self.input_dim == self.output_dim and self.use_residual:
+            # If using residual connection, initialize projection to zero
+            # so that output = 0 + x = x (identity)
+            nn.init.zeros_(self.projection.weight)
+        elif self.input_dim == self.output_dim:
+            # Perfect identity initialization without residual
             nn.init.eye_(self.projection.weight)
         else:
             # Initialize small random weights for non-matching dimensions
