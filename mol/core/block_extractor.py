@@ -7,18 +7,19 @@ import torch.nn as nn
 from typing import Dict, List, Optional, Tuple, Any
 from transformers import (
     AutoModel, AutoConfig, AutoTokenizer,
-    GPT2Model, GPTNeoModel, GPTJModel, LlamaModel, 
-    BertModel, RobertaModel, DistilBertModel
+    AutoModelForCausalLM, AutoModelForMaskedLM
 )
 from dataclasses import dataclass
 import logging
+
+from .universal_architecture import UniversalArchitectureHandler, ArchitectureInfo
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ModelInfo:
-    """Information about a model's architecture."""
+    """Information about a model's architecture (legacy compatibility)."""
     model_name: str
     hidden_dim: int
     num_layers: int
@@ -46,53 +47,39 @@ class BlockExtractor:
     """
     Extracts transformer blocks from different model architectures.
     
-    Supports various HuggingFace model types and provides unified interface
-    for accessing individual transformer layers.
+    Supports ALL transformer architectures available in HuggingFace (120+)
+    with dynamic architecture detection and secure loading by default.
     """
     
-    # Mapping of architecture types to their layer attribute names
-    LAYER_ATTR_MAPPING = {
-        "gpt2": "transformer.h",
-        "gpt_neo": "transformer.h", 
-        "gptj": "transformer.h",
-        "llama": "model.layers",
-        "bert": "encoder.layer",
-        "roberta": "encoder.layer",
-        "distilbert": "transformer.layer",
-    }
-    
-    def __init__(self):
+    def __init__(self, trust_remote_code: bool = False):
+        """
+        Initialize BlockExtractor.
+        
+        Args:
+            trust_remote_code: Whether to allow remote code execution (default: False for security)
+        """
+        self.trust_remote_code = trust_remote_code
+        self.architecture_handler = UniversalArchitectureHandler(trust_remote_code)
         self.loaded_models: Dict[str, Any] = {}
         self.model_infos: Dict[str, ModelInfo] = {}
+        self.architecture_infos: Dict[str, ArchitectureInfo] = {}
+        
+        if trust_remote_code:
+            logger.warning(
+                "⚠️  trust_remote_code=True enabled. This may execute arbitrary code from model repositories."
+            )
+    
+    def get_architecture_info(self, model_name: str) -> ArchitectureInfo:
+        """Get comprehensive architecture information for a model."""
+        if model_name not in self.architecture_infos:
+            arch_info = self.architecture_handler.detect_architecture(model_name)
+            self.architecture_infos[model_name] = arch_info
+        return self.architecture_infos[model_name]
     
     def get_architecture_type(self, model_name: str) -> str:
-        """Determine the architecture type from model name or config."""
-        try:
-            config = AutoConfig.from_pretrained(model_name)
-            arch_type = config.architectures[0].lower() if config.architectures else ""
-            
-            # Map known architecture types
-            if "gpt2" in arch_type:
-                return "gpt2"
-            elif "gptneo" in arch_type:
-                return "gpt_neo"
-            elif "gptj" in arch_type:
-                return "gptj"
-            elif "llama" in arch_type:
-                return "llama"
-            elif "bert" in arch_type and "distil" not in arch_type:
-                return "bert"
-            elif "roberta" in arch_type:
-                return "roberta"
-            elif "distilbert" in arch_type:
-                return "distilbert"
-            else:
-                logger.warning(f"Unknown architecture type: {arch_type}, defaulting to gpt2")
-                return "gpt2"
-                
-        except Exception as e:
-            logger.warning(f"Could not determine architecture for {model_name}: {e}")
-            return "gpt2"
+        """Determine the architecture type from model name or config (legacy compatibility)."""
+        arch_info = self.get_architecture_info(model_name)
+        return arch_info.architecture_type
     
     def load_model(self, model_name: str, device: str = "cpu") -> Tuple[nn.Module, ModelInfo]:
         """Load a model and extract its information."""
@@ -100,8 +87,21 @@ class BlockExtractor:
             return self.loaded_models[model_name], self.model_infos[model_name]
         
         try:
+            # Get architecture information first
+            arch_info = self.get_architecture_info(model_name)
+            
+            # Check if model requires remote code and we don't allow it
+            if arch_info.requires_remote_code and not self.trust_remote_code:
+                raise ValueError(
+                    f"Model {model_name} requires trust_remote_code=True but it's disabled for security. "
+                    "Set trust_remote_code=True if you trust this model repository."
+                )
+            
             # Load config and model
-            config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
+            config = AutoConfig.from_pretrained(
+                model_name, 
+                trust_remote_code=self.trust_remote_code
+            )
             
             # Determine appropriate torch dtype
             torch_dtype = torch.float16 if device != "cpu" else torch.float32
@@ -111,26 +111,24 @@ class BlockExtractor:
                 torch_dtype=torch_dtype,
                 device_map=device if device != "cpu" else None,
                 low_cpu_mem_usage=True,
-                trust_remote_code=False
+                trust_remote_code=self.trust_remote_code
             )
             
             # Move to device if necessary
             if device == "cpu":
                 model = model.to(device)
             
-            # Extract model information
-            architecture_type = self.get_architecture_type(model_name)
-            
+            # Create legacy ModelInfo for compatibility
             model_info = ModelInfo(
                 model_name=model_name,
-                hidden_dim=config.hidden_size,
-                num_layers=config.num_hidden_layers,
-                num_attention_heads=config.num_attention_heads,
-                intermediate_size=getattr(config, 'intermediate_size', config.hidden_size * 4),
-                vocab_size=config.vocab_size,
-                max_position_embeddings=getattr(config, 'max_position_embeddings', 2048),
-                layer_norm_eps=getattr(config, 'layer_norm_eps', 1e-5),
-                architecture_type=architecture_type
+                hidden_dim=arch_info.hidden_dim,
+                num_layers=arch_info.num_layers,
+                num_attention_heads=arch_info.num_attention_heads,
+                intermediate_size=arch_info.intermediate_size,
+                vocab_size=arch_info.vocab_size,
+                max_position_embeddings=arch_info.max_position_embeddings,
+                layer_norm_eps=arch_info.layer_norm_eps,
+                architecture_type=arch_info.architecture_type
             )
             
             # Cache the loaded model and info
@@ -145,11 +143,39 @@ class BlockExtractor:
             # Clear any partial cache entries
             self.loaded_models.pop(model_name, None)
             self.model_infos.pop(model_name, None)
+            self.architecture_infos.pop(model_name, None)
             raise
     
     def get_model_layers(self, model: nn.Module, architecture_type: str) -> nn.ModuleList:
         """Get the transformer layers from a model."""
-        layer_attr = self.LAYER_ATTR_MAPPING.get(architecture_type)
+        # Get architecture info for the model
+        arch_info = None
+        for model_name, cached_info in self.architecture_infos.items():
+            if cached_info.architecture_type == architecture_type:
+                arch_info = cached_info
+                break
+        
+        if arch_info:
+            # Use universal handler with known architecture info
+            return self.architecture_handler.get_layers(model, arch_info)
+        else:
+            # Fallback to legacy method for backward compatibility
+            return self._get_layers_legacy(model, architecture_type)
+    
+    def _get_layers_legacy(self, model: nn.Module, architecture_type: str) -> nn.ModuleList:
+        """Legacy layer detection method (for backward compatibility)."""
+        # Legacy mapping for known architectures
+        legacy_mapping = {
+            "gpt2": "transformer.h",
+            "gpt_neo": "transformer.h", 
+            "gptj": "transformer.h",
+            "llama": "model.layers",
+            "bert": "encoder.layer",
+            "roberta": "encoder.layer",
+            "distilbert": "transformer.layer",
+        }
+        
+        layer_attr = legacy_mapping.get(architecture_type)
         if not layer_attr:
             raise ValueError(f"Unsupported architecture type: {architecture_type}")
         
@@ -218,7 +244,21 @@ class BlockExtractor:
     def get_embedding_layer(self, model_name: str, device: str = "cpu") -> Tuple[nn.Module, int]:
         """Get the embedding layer from a model."""
         model, model_info = self.load_model(model_name, device)
+        arch_info = self.get_architecture_info(model_name)
         
+        try:
+            # Use universal handler to get embeddings
+            embeddings = self.architecture_handler.get_embeddings(model, arch_info)
+            embed_dim = arch_info.hidden_dim
+            return embeddings, embed_dim
+            
+        except Exception as e:
+            # Fallback to legacy method
+            logger.warning(f"Universal handler failed, trying legacy method: {e}")
+            return self._get_embedding_layer_legacy(model, model_info)
+    
+    def _get_embedding_layer_legacy(self, model: nn.Module, model_info: ModelInfo) -> Tuple[nn.Module, int]:
+        """Legacy embedding detection method."""
         # Different architectures have different embedding structures
         if model_info.architecture_type in ["gpt2", "gpt_neo", "gptj"]:
             embeddings = model.transformer.wte  # Word token embeddings
@@ -245,48 +285,68 @@ class BlockExtractor:
             return self.loaded_models[cache_key]
             
         try:
+            arch_info = self.get_architecture_info(model_name)
+            
+            # Check if model requires remote code and we don't allow it
+            if arch_info.requires_remote_code and not self.trust_remote_code:
+                logger.warning(
+                    f"Model {model_name} requires trust_remote_code=True for LM head, skipping"
+                )
+                return None
+            
             # Load the full model with LM head
             from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
-            
-            model_info = self.model_infos.get(model_name)
-            if not model_info:
-                _, model_info = self.load_model(model_name, device)
             
             lm_head = None
             torch_dtype = torch.float16 if device != "cpu" else torch.float32
             
-            # Try causal LM first
-            try:
-                full_model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    torch_dtype=torch_dtype,
-                    device_map=device if device != "cpu" else None,
-                    low_cpu_mem_usage=True,
-                    trust_remote_code=False
-                )
-                lm_head = getattr(full_model, 'lm_head', None)
-                if device == "cpu":
-                    lm_head = lm_head.to(device) if lm_head else None
+            # Try causal LM first if supported
+            if arch_info.supports_causal_lm:
+                try:
+                    full_model = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch_dtype,
+                        device_map=device if device != "cpu" else None,
+                        low_cpu_mem_usage=True,
+                        trust_remote_code=self.trust_remote_code
+                    )
                     
-            except Exception as e1:
-                logger.debug(f"Could not load as causal LM: {e1}")
-                # Try masked LM
+                    # Use universal handler to get LM head
+                    if arch_info.lm_head_path:
+                        lm_head = self.architecture_handler.get_lm_head(full_model, arch_info)
+                    else:
+                        lm_head = getattr(full_model, 'lm_head', None)
+                    
+                    if device == "cpu" and lm_head:
+                        lm_head = lm_head.to(device)
+                        
+                except Exception as e1:
+                    logger.debug(f"Could not load as causal LM: {e1}")
+            
+            # Try masked LM if causal LM failed and it's supported
+            if not lm_head and arch_info.supports_masked_lm:
                 try:
                     full_model = AutoModelForMaskedLM.from_pretrained(
                         model_name,
                         torch_dtype=torch_dtype,
                         device_map=device if device != "cpu" else None,
                         low_cpu_mem_usage=True,
-                        trust_remote_code=False
+                        trust_remote_code=self.trust_remote_code
                     )
-                    lm_head = getattr(full_model, 'cls', None)
-                    if not lm_head:
-                        lm_head = getattr(full_model, 'lm_head', None)
-                    if device == "cpu":
-                        lm_head = lm_head.to(device) if lm_head else None
+                    
+                    # Use universal handler to get LM head
+                    if arch_info.lm_head_path:
+                        lm_head = self.architecture_handler.get_lm_head(full_model, arch_info)
+                    else:
+                        lm_head = getattr(full_model, 'cls', None)
+                        if not lm_head:
+                            lm_head = getattr(full_model, 'lm_head', None)
+                    
+                    if device == "cpu" and lm_head:
+                        lm_head = lm_head.to(device)
                         
                 except Exception as e2:
-                    logger.warning(f"Could not load LM head for {model_name} as either causal or masked LM: {e1}, {e2}")
+                    logger.warning(f"Could not load LM head for {model_name}: {e2}")
                     lm_head = None
             
             # Cache the result (even if None)
@@ -348,7 +408,11 @@ class BlockExtractor:
         """Clear cached models to free memory."""
         self.loaded_models.clear()
         self.model_infos.clear()
+        self.architecture_infos.clear()
+        self.architecture_handler.clear_cache()
         
         # Clear GPU cache if available
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        
+        logger.info("Cleared all caches and freed memory")

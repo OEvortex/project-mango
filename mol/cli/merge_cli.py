@@ -31,6 +31,13 @@ def merge_command(args):
     """Execute merge operation."""
     print(f"🔄 MoL Merge - Starting {args.config} merge operation")
     
+    # Security warning for trust_remote_code
+    if getattr(args, 'trust_remote_code', False):
+        print("⚠️  WARNING: trust_remote_code=True enabled!")
+        print("   This may execute arbitrary code from model repositories.")
+        print("   Only proceed if you trust all models in the configuration.")
+        print()
+    
     # Setup logging
     setup_logging(args.log_level)
     
@@ -60,6 +67,8 @@ def merge_command(args):
         config.low_cpu_mem_usage = args.low_cpu_mem_usage
     if args.lazy_unpickle is not None:
         config.lazy_unpickle = args.lazy_unpickle
+    if hasattr(args, 'trust_remote_code') and args.trust_remote_code is not None:
+        config.trust_remote_code = args.trust_remote_code
     
     # Check device availability
     if config.device.startswith('cuda') and not torch.cuda.is_available():
@@ -404,6 +413,12 @@ Examples:
         action="store_false",
         help="Disable SafeTensors and use PyTorch format"
     )
+    merge_parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        default=False,
+        help="Allow remote code execution (SECURITY RISK: only use with trusted models)"
+    )
     merge_parser.set_defaults(func=merge_command)
     
     # Validate command
@@ -468,6 +483,12 @@ Examples:
         action="store_true",
         help="Create pull request instead of direct push"
     )
+    push_parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        default=False,
+        help="Allow remote code execution (SECURITY RISK: only use with trusted models)"
+    )
     push_parser.set_defaults(func=push_hf_command)
     
     # Parse arguments
@@ -487,6 +508,7 @@ Examples:
             args.allow_crimes = False
             args.cleanup = False
             args.verbose = False
+            args.trust_remote_code = False
             args.func = merge_command
         else:
             parser.print_help()

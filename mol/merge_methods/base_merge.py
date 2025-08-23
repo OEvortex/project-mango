@@ -23,6 +23,7 @@ class MergeConfig:
     output_path: str = "./merged_model"
     base_model: Optional[str] = None
     layer_range: Optional[List[int]] = None
+    trust_remote_code: bool = False  # Security: disable remote code by default
 
 
 @dataclass
@@ -42,6 +43,13 @@ class BaseMergeMethod(ABC):
         self.config = config
         self.models = {}
         self.model_configs = {}
+        
+        # Security warning if trust_remote_code is enabled
+        if config.trust_remote_code:
+            logger.warning(
+                "⚠️  trust_remote_code=True enabled. This may execute arbitrary code from model repositories. "
+                "Only use with trusted models."
+            )
         
     @abstractmethod
     def merge(self, models: Dict[str, nn.Module]) -> nn.Module:
@@ -68,7 +76,10 @@ class BaseMergeMethod(ABC):
                 logger.info(f"Loading model: {model_name}")
                 
                 # Load config first
-                config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
+                config = AutoConfig.from_pretrained(
+                    model_name, 
+                    trust_remote_code=self.config.trust_remote_code
+                )
                 self.model_configs[model_name] = config
                 
                 # Determine appropriate torch dtype
@@ -84,7 +95,7 @@ class BaseMergeMethod(ABC):
                     torch_dtype=torch_dtype,
                     device_map=self.config.device if self.config.device != "cpu" else None,
                     low_cpu_mem_usage=True,
-                    trust_remote_code=False
+                    trust_remote_code=self.config.trust_remote_code
                 )
                 
                 # Move to device if CPU
@@ -213,7 +224,10 @@ class BaseMergeMethod(ABC):
             
             # Use base model config as template
             base_model_name = self.config.base_model or self.config.models[0]
-            base_config = AutoConfig.from_pretrained(base_model_name, trust_remote_code=False)
+            base_config = AutoConfig.from_pretrained(
+                base_model_name, 
+                trust_remote_code=self.config.trust_remote_code
+            )
             
             # Add merge metadata to config
             base_config.mol_merge_info = {

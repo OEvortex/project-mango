@@ -34,6 +34,7 @@ class MoLConfig:
     load_balancing_coeff: float = 0.01
     top_k_experts: Optional[int] = None
     device_map: Optional[Dict[str, str]] = None
+    trust_remote_code: bool = False  # Security: disable remote code by default
 
 
 @dataclass
@@ -56,8 +57,15 @@ class MoLRuntime(nn.Module):
         super().__init__()
         self.config = config
         
+        # Security warning if trust_remote_code is enabled
+        if config.trust_remote_code:
+            logger.warning(
+                "⚠️  trust_remote_code=True enabled. This may execute arbitrary code from model repositories. "
+                "Only use with trusted models."
+            )
+        
         # Core components
-        self.block_extractor = BlockExtractor()
+        self.block_extractor = BlockExtractor(trust_remote_code=config.trust_remote_code)
         self.memory_manager = MemoryManager()
         self.model_utils = ModelUtils()
         
@@ -118,7 +126,10 @@ class MoLRuntime(nn.Module):
         from transformers import AutoTokenizer
         
         primary_model = self.config.models[0]
-        self.tokenizer = AutoTokenizer.from_pretrained(primary_model)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            primary_model,
+            trust_remote_code=self.config.trust_remote_code
+        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
