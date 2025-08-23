@@ -2,6 +2,8 @@
 
 Welcome to Project Mango! This guide will help you get up and running with the MoL (Modular Layer) system in just a few minutes.
 
+> **⚠️ Beta Testing**: This project is currently in beta testing. Install from source and help us improve by reporting issues!
+
 ## 📋 Prerequisites
 
 Before you begin, ensure you have:
@@ -13,11 +15,15 @@ Before you begin, ensure you have:
 
 ## 🔧 Installation
 
-### Option 1: Quick Install (Recommended)
+## 🔧 Installation
+
+### Beta Testing Installation (Recommended)
+
+Since Project Mango is currently in beta testing, install directly from the GitHub repository:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/project-mango.git
+git clone https://github.com/OEvortex/project-mango.git
 cd project-mango
 
 # Create virtual environment (recommended)
@@ -31,9 +37,10 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Option 2: From PyPI (Coming Soon)
+### Future PyPI Installation (Coming Soon)
 
 ```bash
+# This will be available after beta testing
 pip install project-mango-mol
 ```
 

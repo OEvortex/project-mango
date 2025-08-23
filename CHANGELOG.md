@@ -8,14 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Comprehensive documentation system with MkDocs
-- Professional styling with Material Design theme
-- Interactive tutorials and examples
-- Complete API reference documentation
-- Advanced topics and optimization guides
-- Development and contribution guidelines
+- Beta testing phase with community feedback collection
+- Enhanced documentation system with professional styling
+- GitHub repository setup with proper licensing
+- Installation instructions for beta testing from source
 
-## [1.0.0] - 2024-01-15
+## [0.1.0-beta] - 2024-01-15 - **Current Beta Release**
+
+> **🧑‍🔬 Beta Testing**: This is a beta release for testing and feedback. Not yet available on PyPI.
 
 ### Added
 - Initial release of Project Mango MoL system

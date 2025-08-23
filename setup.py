@@ -8,16 +8,17 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="project-mango-mol",
-    version="0.1.0",
+    version="0.1.0-beta",
     author="Project Mango Team",
-    description="Modular Layer (MoL) system for fusing transformer blocks from different LLMs",
+    description="Modular Layer (MoL) system for fusing transformer blocks from different LLMs (Beta Testing)",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/OEvortex/project-mango",
     packages=find_packages(),
     classifiers=[
-        "Development Status :: 3 - Alpha",
+        "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
+        "Intended Audience :: Science/Research",
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
@@ -25,7 +26,15 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+        "Topic :: Software Development :: Libraries :: Python Modules",
     ],
     python_requires=">=3.8",
     install_requires=requirements,
+    keywords="transformer, llm, model-fusion, model-merging, pytorch, huggingface",
+    project_urls={
+        "Bug Reports": "https://github.com/OEvortex/project-mango/issues",
+        "Source": "https://github.com/OEvortex/project-mango",
+        "Documentation": "https://github.com/OEvortex/project-mango#readme",
+    },
 )

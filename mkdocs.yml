@@ -205,8 +205,6 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/OEvortex/project-mango
-    - icon: fontawesome/brands/python
-      link: https://pypi.org/project/project-mango-mol/
     - icon: fontawesome/brands/discord
       link: https://discord.gg/project-mango
     - icon: fontawesome/brands/twitter
