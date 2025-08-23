@@ -8,6 +8,9 @@ import torch.nn.functional as F
 from abc import ABC, abstractmethod
 from typing import Tuple, Optional, List
 import math
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BaseRouter(nn.Module, ABC):
@@ -92,6 +95,9 @@ class SimpleRouter(BaseRouter):
         attention_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Pool sequence to single representation."""
+        if x is None:
+            raise ValueError("Input tensor cannot be None")
+        
         if self.pooling_type == "mean":
             if attention_mask is not None:
                 # Masked mean pooling
@@ -121,6 +127,18 @@ class SimpleRouter(BaseRouter):
             attention_weights = F.softmax(attention_scores, dim=1).unsqueeze(-1)
             pooled = torch.sum(x * attention_weights, dim=1)
         
+        else:
+            raise ValueError(f"Unknown pooling type: {self.pooling_type}")
+        
+        # Validate output
+        if pooled is None:
+            raise RuntimeError(f"Pooling with type '{self.pooling_type}' returned None")
+        
+        # Check for NaN or inf
+        if torch.isnan(pooled).any() or torch.isinf(pooled).any():
+            logger.warning(f"NaN or inf detected in pooled output, replacing with zeros")
+            pooled = torch.zeros_like(pooled)
+        
         return pooled
     
     def forward(
@@ -129,7 +147,13 @@ class SimpleRouter(BaseRouter):
         attention_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass through simple router."""
+        if x is None:
+            raise ValueError("Input tensor cannot be None")
+        
         batch_size, seq_len, hidden_dim = x.shape
+        
+        if hidden_dim != self.hidden_dim:
+            raise ValueError(f"Input hidden_dim {hidden_dim} does not match router hidden_dim {self.hidden_dim}")
         
         # Pool sequence to single representation
         pooled = self._pool_sequence(x, attention_mask)  # [batch_size, hidden_dim]
@@ -145,6 +169,10 @@ class SimpleRouter(BaseRouter):
         
         # Expand to match sequence length
         expert_weights = expert_weights.unsqueeze(1).expand(batch_size, seq_len, self.num_experts)
+        
+        # Validate outputs
+        if expert_weights is None or router_logits is None:
+            raise RuntimeError("Router forward produced None outputs")
         
         # Return weights and logits for entropy calculation
         return expert_weights, router_logits
@@ -227,7 +255,13 @@ class TokenLevelRouter(BaseRouter):
         attention_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass through token-level router."""
+        if x is None:
+            raise ValueError("Input tensor cannot be None")
+        
         batch_size, seq_len, hidden_dim = x.shape
+        
+        if hidden_dim != self.hidden_dim:
+            raise ValueError(f"Input hidden_dim {hidden_dim} does not match router hidden_dim {self.hidden_dim}")
         
         # Flatten for processing
         x_flat = x.view(-1, hidden_dim)  # [batch_size * seq_len, hidden_dim]
@@ -253,6 +287,10 @@ class TokenLevelRouter(BaseRouter):
             
             # Also mask router logits for entropy calculation
             router_logits = router_logits * mask_expanded
+        
+        # Validate outputs
+        if expert_weights is None or router_logits is None:
+            raise RuntimeError("Router forward produced None outputs")
         
         return expert_weights, router_logits
 

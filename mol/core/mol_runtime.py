@@ -155,6 +155,7 @@ class MoLRuntime(nn.Module):
         for model_name, model_layer_idx in layer_specs:
             block = self.block_extractor.extract_block(model_name, model_layer_idx)
             experts.append(block)
+            logger.debug(f"Extracted block from {model_name} layer {model_layer_idx}, input_dim: {block.input_dim}")
         
         # Create adapters for dimension matching
         adapters = []
@@ -166,15 +167,27 @@ class MoLRuntime(nn.Module):
                 init_identity=True
             )
             adapters.append(adapter)
+            logger.debug(f"Created adapter: {expert.input_dim} -> {self.target_hidden_dim}")
         
-        # Create router
-        router = create_router(
-            self.config.router_type,
-            hidden_dim=self.target_hidden_dim,
-            num_experts=len(experts),
-            temperature=self.config.temperature,
-            top_k=self.config.top_k_experts
-        )
+        # Create router with comprehensive logging
+        logger.debug(f"Creating router: type={self.config.router_type}, hidden_dim={self.target_hidden_dim}, num_experts={len(experts)}")
+        
+        try:
+            router = create_router(
+                self.config.router_type,
+                hidden_dim=self.target_hidden_dim,
+                num_experts=len(experts),
+                temperature=self.config.temperature,
+                top_k=self.config.top_k_experts
+            )
+            logger.debug(f"Successfully created router: {type(router)}")
+        except Exception as e:
+            logger.error(f"Failed to create router: {e}")
+            raise RuntimeError(f"Router creation failed: {e}") from e
+        
+        # Validate router
+        if router is None:
+            raise RuntimeError("Router creation returned None")
         
         # Create layer specification
         layer_spec = LayerSpec(
@@ -520,8 +533,24 @@ class MoLLayer(nn.Module):
         # Ensure all components are on the same device
         self.router = self.router.to(device)
         
-        # Get routing decisions
-        expert_weights, router_logits = self.router(hidden_states, attention_mask)
+        # Debug router state
+        if self.router is None:
+            raise RuntimeError("Router is None - this should not happen")
+        
+        logger.debug(f"Router type: {type(self.router)}, device: {next(self.router.parameters()).device}")
+        logger.debug(f"Input shape: {hidden_states.shape}, device: {device}")
+        
+        # Get routing decisions with error handling
+        try:
+            router_output = self.router(hidden_states, attention_mask)
+            if router_output is None:
+                raise RuntimeError(f"Router {type(self.router)} returned None instead of tuple")
+            if not isinstance(router_output, tuple) or len(router_output) != 2:
+                raise RuntimeError(f"Router returned {type(router_output)} with length {len(router_output) if hasattr(router_output, '__len__') else 'N/A'}, expected tuple of length 2")
+            expert_weights, router_logits = router_output
+        except Exception as e:
+            logger.error(f"Router forward failed: {e}. Router type: {type(self.router)}")
+            raise RuntimeError(f"Router forward failed: {e}") from e
         
         # Process through each expert
         expert_outputs = []
@@ -582,6 +611,8 @@ class MoLLayer(nn.Module):
             forward_sig = inspect.signature(expert.forward)
             forward_params = list(forward_sig.parameters.keys())
             
+            logger.debug(f"Expert {type(expert)} expects parameters: {forward_params}")
+            
             # Build arguments based on what the expert expects
             kwargs = {}
             
@@ -589,13 +620,24 @@ class MoLLayer(nn.Module):
             if 'attention_mask' in forward_params and attention_mask is not None:
                 kwargs['attention_mask'] = attention_mask
             
-            # Handle position embeddings for models that need them (like LFM2)
+            # Handle position embeddings for models that need them (like Qwen3)
             if 'position_embeddings' in forward_params:
-                # For now, skip position embeddings to avoid dimension issues
-                # This is a temporary fix - in practice, we'd want to extract 
-                # position embeddings from the original model
-                logger.debug("Skipping position_embeddings parameter due to dimension complexity")
-                # Don't add position_embeddings to kwargs
+                # Create appropriate position embeddings
+                batch_size, seq_len = hidden_states.shape[:2]
+                device = hidden_states.device
+                
+                # Try to create sinusoidal position embeddings as fallback
+                try:
+                    position_embeddings = self._create_position_embeddings(
+                        torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1),
+                        hidden_states.shape[-1],
+                        device
+                    )
+                    kwargs['position_embeddings'] = position_embeddings
+                    logger.debug(f"Created position embeddings with shape: {position_embeddings.shape}")
+                except Exception as e:
+                    logger.debug(f"Failed to create position embeddings: {e}, skipping")
+                    # Don't add position_embeddings to kwargs if creation fails
             
             # Handle position_ids parameter
             if 'position_ids' in forward_params:
@@ -604,8 +646,17 @@ class MoLLayer(nn.Module):
                 position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
                 kwargs['position_ids'] = position_ids
             
+            # Handle cache_position parameter (for Qwen3 and newer models)
+            if 'cache_position' in forward_params:
+                batch_size, seq_len = hidden_states.shape[:2]
+                device = hidden_states.device
+                cache_position = torch.arange(seq_len, device=device)
+                kwargs['cache_position'] = cache_position
+            
             # Handle past_key_values parameter
-            if 'past_key_values' in forward_params:
+            if 'past_key_value' in forward_params:
+                kwargs['past_key_value'] = None
+            elif 'past_key_values' in forward_params:
                 kwargs['past_key_values'] = None
             
             # Handle use_cache parameter
@@ -616,13 +667,31 @@ class MoLLayer(nn.Module):
             if 'output_attentions' in forward_params:
                 kwargs['output_attentions'] = False
             
+            logger.debug(f"Calling expert with kwargs: {list(kwargs.keys())}")
+            
             # Forward through expert with appropriate arguments
-            output = expert(hidden_states, **kwargs)
+            try:
+                output = expert(hidden_states, **kwargs)
+                logger.debug(f"Expert raw output type: {type(output)}")
+                logger.debug(f"Expert raw output: {output}")
+            except Exception as expert_call_error:
+                logger.error(f"Expert call failed with error: {expert_call_error}")
+                raise expert_call_error
+            
+            logger.debug(f"Expert output type: {type(output)}, is_tuple: {isinstance(output, tuple)}")
             
             # Handle different return formats
             if isinstance(output, tuple):
+                if len(output) == 0:
+                    logger.warning("Expert returned empty tuple")
+                    return hidden_states
+                logger.debug(f"Expert returned tuple of length {len(output)}")
                 return output[0]  # Take hidden states
+            elif output is None:
+                logger.warning("Expert returned None")
+                return hidden_states
             else:
+                logger.debug(f"Expert returned single tensor with shape {output.shape}")
                 return output
                 
         except TypeError as e:
@@ -631,7 +700,13 @@ class MoLLayer(nn.Module):
                 logger.debug(f"Trying fallback forward for expert: {e}")
                 output = expert(hidden_states)
                 if isinstance(output, tuple):
+                    if len(output) == 0:
+                        logger.warning("Expert fallback returned empty tuple")
+                        return hidden_states
                     return output[0]
+                elif output is None:
+                    logger.warning("Expert fallback returned None")
+                    return hidden_states
                 else:
                     return output
             except Exception as e2:
@@ -641,15 +716,32 @@ class MoLLayer(nn.Module):
             logger.warning(f"Expert forward failed: {e}. Using identity.")
             return hidden_states
     
-    def _create_position_embeddings(self, position_ids: torch.Tensor, hidden_dim: int, device: torch.device) -> torch.Tensor:
-        """Create sinusoidal position embeddings as fallback."""
+    def _create_position_embeddings(self, position_ids: torch.Tensor, hidden_dim: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Create rotary position embeddings (cos, sin) as fallback for RoPE models like Qwen3."""
         max_pos = 10000
-        pe = torch.zeros(position_ids.size(0), position_ids.size(1), hidden_dim, device=device)
+        batch_size, seq_len = position_ids.shape
         
-        div_term = torch.exp(torch.arange(0, hidden_dim, 2, device=device).float() * 
-                            -(math.log(max_pos) / hidden_dim))
+        # For RoPE, we need half the hidden dimension
+        rope_dim = hidden_dim // 2
         
-        pe[:, :, 0::2] = torch.sin(position_ids.unsqueeze(-1).float() * div_term)
-        pe[:, :, 1::2] = torch.cos(position_ids.unsqueeze(-1).float() * div_term)
+        # Create frequency components
+        div_term = torch.exp(torch.arange(0, rope_dim, 2, device=device).float() * 
+                            -(math.log(max_pos) / rope_dim))
         
-        return pe
+        # Expand position_ids to include the frequency dimension
+        position_ids_expanded = position_ids.unsqueeze(-1).float()  # [batch, seq, 1]
+        
+        # Create sine and cosine components
+        cos_embeddings = torch.cos(position_ids_expanded * div_term.unsqueeze(0).unsqueeze(0))  # [batch, seq, rope_dim//2]
+        sin_embeddings = torch.sin(position_ids_expanded * div_term.unsqueeze(0).unsqueeze(0))  # [batch, seq, rope_dim//2]
+        
+        # Repeat to match the full rope dimension if needed
+        if cos_embeddings.shape[-1] * 2 < rope_dim:
+            # Pad to match rope_dim
+            padding_size = rope_dim - cos_embeddings.shape[-1] * 2
+            cos_pad = torch.zeros(batch_size, seq_len, padding_size // 2, device=device)
+            sin_pad = torch.zeros(batch_size, seq_len, padding_size // 2, device=device)
+            cos_embeddings = torch.cat([cos_embeddings, cos_pad], dim=-1)
+            sin_embeddings = torch.cat([sin_embeddings, sin_pad], dim=-1)
+        
+        return cos_embeddings, sin_embeddings
