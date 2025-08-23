@@ -267,9 +267,15 @@ def create_router(
     router_type = router_type.lower()
     
     if router_type == "simple":
-        return SimpleRouter(hidden_dim, num_experts, **kwargs)
+        # Filter kwargs for SimpleRouter
+        simple_kwargs = {k: v for k, v in kwargs.items() 
+                        if k in ['pooling_type', 'temperature', 'dropout_rate']}
+        return SimpleRouter(hidden_dim, num_experts, **simple_kwargs)
     elif router_type in ["token", "token_level"]:
-        return TokenLevelRouter(hidden_dim, num_experts, **kwargs)
+        # Filter kwargs for TokenLevelRouter
+        token_kwargs = {k: v for k, v in kwargs.items() 
+                       if k in ['temperature', 'top_k', 'dropout_rate', 'noise_std']}
+        return TokenLevelRouter(hidden_dim, num_experts, **token_kwargs)
     else:
         raise ValueError(f"Unknown router type: {router_type}")
 
