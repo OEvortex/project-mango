@@ -170,67 +170,190 @@ class MemoryManager:
                 # Offload back to CPU
                 self.offload_module(module, module_name, "cpu")
     
-    def create_device_map(
-        self, 
-        modules: List[str], 
-        available_devices: List[str],
-        memory_per_module: Optional[Dict[str, float]] = None
+    def smart_device_placement(
+        self,
+        models: Dict[str, Any],
+        target_device: str = "cuda",
+        memory_limit_gb: float = None
     ) -> Dict[str, str]:
         """
-        Create device mapping for modules based on memory constraints.
+        Intelligently place models across devices based on memory constraints.
         
         Args:
-            modules: List of module names
-            available_devices: List of available devices
-            memory_per_module: Estimated memory usage per module (GB)
-        
+            models: Dictionary of models to place
+            target_device: Preferred device
+            memory_limit_gb: Memory limit in GB per device
+            
         Returns:
-            Device mapping dictionary
+            Device placement mapping
         """
         device_map = {}
-        device_memory = {}
         
-        # Get device memory info
-        for device in available_devices:
-            if device == "cpu":
-                device_memory[device] = psutil.virtual_memory().available / (1024**3)
-            elif device.startswith("cuda"):
-                device_idx = int(device.split(":")[-1]) if ":" in device else 0
-                if torch.cuda.is_available() and device_idx < torch.cuda.device_count():
-                    mem_info = torch.cuda.mem_get_info(device_idx)
-                    device_memory[device] = mem_info[0] / (1024**3)  # Available memory
-                else:
-                    device_memory[device] = 0.0
+        if memory_limit_gb is None:
+            stats = self.get_memory_stats()
+            if target_device.startswith("cuda") and stats.total_vram > 0:
+                memory_limit_gb = stats.available_vram * 0.8  # Use 80% of available
+            else:
+                memory_limit_gb = stats.available_ram * 0.6   # Use 60% of available
         
-        # Sort devices by available memory (descending)
-        sorted_devices = sorted(device_memory.items(), key=lambda x: x[1], reverse=True)
+        current_memory_usage = 0.0
         
-        # Assign modules to devices
-        current_device_idx = 0
-        current_device_memory = {dev: mem for dev, mem in sorted_devices}
-        
-        for module in modules:
-            # Get memory requirement for this module
-            module_memory = memory_per_module.get(module, 1.0) if memory_per_module else 1.0
+        for model_name, model in models.items():
+            # Estimate model memory
+            model_memory = self.estimate_model_memory(model)
             
-            # Find device with enough memory
-            assigned = False
-            for i, (device, available_mem) in enumerate(sorted_devices):
-                if current_device_memory[device] >= module_memory:
-                    device_map[module] = device
-                    current_device_memory[device] -= module_memory
-                    assigned = True
-                    break
-            
-            # If no device has enough memory, assign to CPU
-            if not assigned:
-                device_map[module] = "cpu"
+            # Check if we can fit on target device
+            if current_memory_usage + model_memory <= memory_limit_gb:
+                device_map[model_name] = target_device
+                current_memory_usage += model_memory
+            else:
+                # Fallback to CPU
+                device_map[model_name] = "cpu"
                 logger.warning(
-                    f"Module {module} assigned to CPU due to memory constraints "
-                    f"(requires {module_memory:.1f}GB)"
+                    f"Model {model_name} placed on CPU due to memory constraints "
+                    f"({model_memory:.1f}GB needed, {memory_limit_gb - current_memory_usage:.1f}GB available)"
                 )
         
         return device_map
+    
+    def lazy_load_model(
+        self,
+        model_name: str,
+        model_loader_func,
+        cache_key: str = None
+    ) -> Any:
+        """
+        Lazy load model with caching and memory management.
+        
+        Args:
+            model_name: Name/identifier of the model
+            model_loader_func: Function to load the model
+            cache_key: Optional cache key (defaults to model_name)
+            
+        Returns:
+            Loaded model
+        """
+        if cache_key is None:
+            cache_key = model_name
+        
+        # Check if already loaded
+        if cache_key in self.offloaded_modules:
+            logger.info(f"Loading cached model: {cache_key}")
+            return self.offloaded_modules[cache_key]
+        
+        # Check memory pressure before loading
+        if self.check_memory_pressure():
+            logger.warning(f"Memory pressure detected before loading {model_name}")
+            self.optimize_memory()
+        
+        # Load model
+        logger.info(f"Lazy loading model: {model_name}")
+        try:
+            model = model_loader_func()
+            
+            # Cache the model
+            self.offloaded_modules[cache_key] = model
+            
+            # Check memory after loading
+            if self.check_memory_pressure():
+                logger.warning(f"Memory pressure detected after loading {model_name}")
+            
+            return model
+            
+        except Exception as e:
+            logger.error(f"Failed to lazy load {model_name}: {e}")
+            raise
+    
+    def batch_offload(
+        self,
+        modules: Dict[str, Any],
+        target_device: str = "cpu",
+        keep_top_k: int = 2
+    ):
+        """
+        Batch offload multiple modules, keeping top-k most recently used.
+        
+        Args:
+            modules: Dictionary of modules to potentially offload
+            target_device: Device to offload to
+            keep_top_k: Number of modules to keep on current device
+        """
+        if len(modules) <= keep_top_k:
+            logger.info(f"Keeping all {len(modules)} modules (under keep_top_k={keep_top_k})")
+            return
+        
+        # Sort by some criteria (e.g., size, last used time)
+        # For now, keep first keep_top_k modules
+        modules_to_offload = list(modules.items())[keep_top_k:]
+        
+        logger.info(f"Batch offloading {len(modules_to_offload)} modules to {target_device}")
+        
+        for name, module in modules_to_offload:
+            try:
+                self.offload_module(module, name, target_device)
+            except Exception as e:
+                logger.warning(f"Failed to offload {name}: {e}")
+    
+    def adaptive_memory_management(
+        self,
+        operation_func,
+        *args,
+        memory_threshold: float = 0.85,
+        max_retries: int = 3,
+        **kwargs
+    ):
+        """
+        Execute operation with adaptive memory management.
+        
+        Args:
+            operation_func: Function to execute
+            *args: Arguments for the function
+            memory_threshold: Memory threshold to trigger cleanup
+            max_retries: Maximum number of retries
+            **kwargs: Keyword arguments for the function
+            
+        Returns:
+            Result of operation_func
+        """
+        for attempt in range(max_retries + 1):
+            try:
+                # Check memory before operation
+                stats = self.get_memory_stats()
+                memory_usage = max(
+                    stats.used_ram / stats.total_ram if stats.total_ram > 0 else 0,
+                    stats.used_vram / stats.total_vram if stats.total_vram > 0 else 0
+                )
+                
+                if memory_usage > memory_threshold:
+                    logger.warning(
+                        f"Memory usage {memory_usage:.1%} exceeds threshold {memory_threshold:.1%}"
+                    )
+                    self.optimize_memory()
+                
+                # Execute operation
+                result = operation_func(*args, **kwargs)
+                return result
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower() and attempt < max_retries:
+                    logger.warning(f"OOM error on attempt {attempt + 1}, cleaning up memory")
+                    self.optimize_memory()
+                    
+                    # More aggressive cleanup on later attempts
+                    if attempt > 0:
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        
+                        # Clear more cached items
+                        for obj in list(self.offloaded_modules.keys()):
+                            if len(self.offloaded_modules) > 1:  # Keep at least one
+                                del self.offloaded_modules[obj]
+                                break
+                else:
+                    raise
+        
+        raise RuntimeError(f"Operation failed after {max_retries + 1} attempts")
     
     def estimate_model_memory(
         self, 

@@ -229,6 +229,7 @@ class MoLRuntime(nn.Module):
             router_stats: Router statistics (if requested)
         """
         batch_size, seq_len = input_ids.shape
+        device = input_ids.device
         
         # Track router statistics
         router_stats = {} if return_router_stats else None
@@ -237,22 +238,38 @@ class MoLRuntime(nn.Module):
         if self.embedding_layer is None:
             raise RuntimeError("Embedding layer not initialized. Call setup_embeddings() first.")
         
+        # Ensure embedding layer is on correct device
+        self.embedding_layer = self.embedding_layer.to(device)
         hidden_states = self.embedding_layer(input_ids)
         
         # Apply embedding adapter if needed
         if self.embedding_adapter:
+            self.embedding_adapter = self.embedding_adapter.to(device)
             hidden_states = self.embedding_adapter(hidden_states)
+        
+        # Ensure hidden states have correct target dimension
+        if hidden_states.size(-1) != self.target_hidden_dim:
+            logger.warning(
+                f"Hidden states dimension {hidden_states.size(-1)} != target dimension {self.target_hidden_dim}"
+            )
         
         # Process through MoL layers
         for layer_idx, mol_layer in enumerate(self.layers):
-            hidden_states, layer_stats = mol_layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                return_stats=return_router_stats
-            )
-            
-            if return_router_stats and layer_stats:
-                router_stats[f"layer_{layer_idx}"] = layer_stats
+            try:
+                hidden_states, layer_stats = mol_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    return_stats=return_router_stats
+                )
+                
+                if return_router_stats and layer_stats:
+                    router_stats[f"layer_{layer_idx}"] = layer_stats
+                    
+            except Exception as e:
+                logger.error(f"Error in layer {layer_idx}: {e}")
+                # Continue with unchanged hidden states
+                if return_router_stats:
+                    router_stats[f"layer_{layer_idx}"] = {'error': str(e)}
         
         return hidden_states, router_stats
     
@@ -395,6 +412,10 @@ class MoLLayer(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[Dict]]:
         """Forward pass through MoL layer."""
         batch_size, seq_len, hidden_dim = hidden_states.shape
+        device = hidden_states.device
+        
+        # Ensure all components are on the same device
+        self.router = self.router.to(device)
         
         # Get routing decisions
         expert_weights, router_logits = self.router(hidden_states, attention_mask)
@@ -402,18 +423,23 @@ class MoLLayer(nn.Module):
         # Process through each expert
         expert_outputs = []
         for i, (expert, adapter) in enumerate(zip(self.experts, self.adapters)):
-            # Pass through expert
-            if hasattr(expert, 'forward'):
-                expert_output = expert(hidden_states)
-                # Handle different return formats
-                if isinstance(expert_output, tuple):
-                    expert_output = expert_output[0]  # Take hidden states
-            else:
-                expert_output = hidden_states  # Fallback
-            
-            # Apply adapter for dimension matching
-            expert_output = adapter(expert_output)
-            expert_outputs.append(expert_output)
+            try:
+                # Ensure expert and adapter are on correct device
+                expert = expert.to(device)
+                adapter = adapter.to(device)
+                
+                # Pass through expert - handle different transformer block signatures
+                expert_output = self._forward_through_expert(expert, hidden_states, attention_mask)
+                
+                # Apply adapter for dimension matching
+                expert_output = adapter(expert_output)
+                expert_outputs.append(expert_output)
+                
+            except Exception as e:
+                logger.warning(f"Error processing expert {i}: {e}. Using identity mapping.")
+                # Fallback to identity mapping through adapter only
+                expert_output = adapter(hidden_states)
+                expert_outputs.append(expert_output)
         
         # Combine expert outputs using routing weights
         expert_outputs = torch.stack(expert_outputs, dim=-1)  # [batch, seq, hidden, num_experts]
@@ -425,13 +451,52 @@ class MoLLayer(nn.Module):
         # Collect statistics
         stats = None
         if return_stats:
-            stats = {
-                'expert_weights': expert_weights.squeeze(-2).detach(),
-                'router_entropy': compute_router_entropy(router_logits).item(),
-                'load_balancing_loss': compute_load_balancing_loss(
-                    expert_weights.squeeze(-2), attention_mask
-                ).item(),
-                'num_experts': self.num_experts,
-            }
+            try:
+                stats = {
+                    'expert_weights': expert_weights.squeeze(-2).detach().cpu(),
+                    'router_entropy': compute_router_entropy(router_logits).item(),
+                    'load_balancing_loss': compute_load_balancing_loss(
+                        expert_weights.squeeze(-2), attention_mask
+                    ).item(),
+                    'num_experts': self.num_experts,
+                }
+            except Exception as e:
+                logger.warning(f"Error computing stats: {e}")
+                stats = {'num_experts': self.num_experts}
         
         return output, stats
+    
+    def _forward_through_expert(
+        self, 
+        expert: nn.Module, 
+        hidden_states: torch.Tensor, 
+        attention_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Safely forward through different types of transformer blocks."""
+        try:
+            # Try standard transformer block signature
+            if attention_mask is not None:
+                output = expert(hidden_states, attention_mask=attention_mask)
+            else:
+                output = expert(hidden_states)
+            
+            # Handle different return formats
+            if isinstance(output, tuple):
+                return output[0]  # Take hidden states
+            else:
+                return output
+                
+        except TypeError:
+            # Try simpler signature
+            try:
+                output = expert(hidden_states)
+                if isinstance(output, tuple):
+                    return output[0]
+                else:
+                    return output
+            except Exception as e:
+                logger.warning(f"Expert forward failed: {e}. Using identity.")
+                return hidden_states
+        except Exception as e:
+            logger.warning(f"Expert forward failed: {e}. Using identity.")
+            return hidden_states

@@ -1,24 +1,48 @@
-# Project Mango - Modular Layer (MoL) System
+# Project Mango - Enhanced MoL System 🥭
 
-A runtime system for dynamically combining transformer blocks from arbitrary Large Language Models (LLMs) using adapters and routing mechanisms.
+**Modular Layer (MoL) System for LLMs with Advanced Model Merging**
 
-## Overview
+A powerful toolkit that combines:
+- 🔄 **Dynamic runtime fusion** of transformer layers from different LLMs  
+- 🔀 **MergeKit-style model merging** with SLERP, TIES, Task Arithmetic, and Linear methods
+- ⚡ **Memory-efficient operations** with lazy loading and smart device placement
+- 🛠️ **YAML configuration system** for easy merge specification
+- 🖥️ **CLI interface** similar to mergekit-yaml
 
-The MoL system enables fusion of transformer layers from different LLMs of varying sizes (e.g., 1B to 7B parameters), allowing you to:
+## 🚀 Quick Start
 
-- **Mix and Match Layers**: Combine layers from specialist and generalist models
-- **Dynamic Routing**: Use intelligent routing to select appropriate layers for different inputs
-- **Efficient Memory Management**: Lazy loading and offloading for large model combinations
-- **Adaptive Fusion**: Train adapters to bridge dimensional differences between models
+### Model Merging (MergeKit-style)
 
-## Key Features
+**Using CLI:**
+```bash
+# Generate example configurations
+mol-merge examples ./configs
 
-- 🔄 **Layer Fusion**: Combine transformer blocks from models of different architectures and sizes
-- 🧠 **Smart Routing**: Token-level and pooled routing strategies for optimal layer selection
-- 📏 **Dimension Adapters**: Linear and bottleneck adapters for handling size mismatches
-- 🚀 **Memory Efficient**: Lazy loading, offloading, and distributed inference support
-- 🎯 **Fine-tunable**: Training pipeline for adapters and routers with identity initialization
-- 📊 **Evaluation Ready**: Built-in metrics and visualization for router behavior
+# Validate configuration
+mol-merge validate config.yml
+
+# Perform merge
+mol-merge config.yml ./merged_model --device cuda --verbose
+```
+
+**Using Python API:**
+```python
+from mol import SlerpMerge
+from mol.merge_methods.base_merge import MergeConfig
+
+# SLERP merge
+config = MergeConfig(
+    method="slerp",
+    models=["gpt2", "distilgpt2"],
+    parameters={"t": 0.5},
+    output_path="./merged_model"
+)
+
+slerp = SlerpMerge(config)
+models = slerp.load_models()
+merged = slerp.merge(models)
+slerp.save_merged_model(merged)
+```
 
 ## Architecture
 

@@ -6,6 +6,9 @@ import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAdapter(nn.Module, ABC):
@@ -56,16 +59,23 @@ class LinearAdapter(BaseAdapter):
     
     def _init_identity(self):
         """Initialize adapter to approximate identity mapping."""
-        if self.input_dim == self.output_dim and self.use_residual:
-            # If using residual connection, initialize projection to zero
-            # so that output = 0 + x = x (identity)
-            nn.init.zeros_(self.projection.weight)
-        elif self.input_dim == self.output_dim:
-            # Perfect identity initialization without residual
-            nn.init.eye_(self.projection.weight)
-        else:
-            # Initialize small random weights for non-matching dimensions
-            nn.init.normal_(self.projection.weight, mean=0.0, std=0.01)
+        try:
+            if self.input_dim == self.output_dim:
+                if self.use_residual:
+                    # If using residual connection, initialize projection to zero
+                    # so that output = 0 + x = x (identity)
+                    nn.init.zeros_(self.projection.weight)
+                else:
+                    # Perfect identity initialization without residual
+                    nn.init.eye_(self.projection.weight)
+            else:
+                # For non-matching dimensions, use small random weights
+                std = 0.01 / max(self.input_dim, self.output_dim) ** 0.5
+                nn.init.normal_(self.projection.weight, mean=0.0, std=std)
+        except Exception as e:
+            logger.warning(f"Identity initialization failed: {e}. Using default initialization.")
+            # Fallback to default initialization
+            nn.init.normal_(self.projection.weight, mean=0.0, std=0.02)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through linear adapter."""

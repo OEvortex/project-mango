@@ -95,25 +95,28 @@ class SimpleRouter(BaseRouter):
         if self.pooling_type == "mean":
             if attention_mask is not None:
                 # Masked mean pooling
-                mask_expanded = attention_mask.unsqueeze(-1).expand_as(x)
+                mask_expanded = attention_mask.unsqueeze(-1).expand_as(x).float()
                 sum_embeddings = torch.sum(x * mask_expanded, dim=1)
-                sum_mask = torch.sum(mask_expanded, dim=1)
-                pooled = sum_embeddings / (sum_mask + 1e-9)
+                sum_mask = torch.sum(mask_expanded, dim=1).clamp(min=1e-9)
+                pooled = sum_embeddings / sum_mask
             else:
                 pooled = torch.mean(x, dim=1)
         
         elif self.pooling_type == "max":
             if attention_mask is not None:
                 # Set masked positions to very negative values
-                x = x.masked_fill(~attention_mask.unsqueeze(-1), -1e9)
-            pooled = torch.max(x, dim=1)[0]
+                mask_expanded = attention_mask.unsqueeze(-1).expand_as(x)
+                x_masked = x.masked_fill(~mask_expanded, -1e9)
+                pooled = torch.max(x_masked, dim=1)[0]
+            else:
+                pooled = torch.max(x, dim=1)[0]
         
         elif self.pooling_type == "attention":
             # Learned attention pooling
             attention_scores = self.attention_pool(x).squeeze(-1)  # [batch, seq_len]
             
             if attention_mask is not None:
-                attention_scores = attention_scores.masked_fill(~attention_mask, -1e9)
+                attention_scores = attention_scores.masked_fill(~attention_mask.bool(), -1e9)
             
             attention_weights = F.softmax(attention_scores, dim=1).unsqueeze(-1)
             pooled = torch.sum(x * attention_weights, dim=1)
@@ -245,8 +248,11 @@ class TokenLevelRouter(BaseRouter):
         # Apply attention mask if provided
         if attention_mask is not None:
             # Zero out weights for masked tokens
-            mask_expanded = attention_mask.unsqueeze(-1).expand_as(expert_weights)
+            mask_expanded = attention_mask.unsqueeze(-1).expand_as(expert_weights).float()
             expert_weights = expert_weights * mask_expanded
+            
+            # Also mask router logits for entropy calculation
+            router_logits = router_logits * mask_expanded
         
         return expert_weights, router_logits
 
