@@ -216,7 +216,113 @@ metadata = load_model_safe(model, "./model")
 - 🔍 **Transparency**: Inspectable file format
 - ✅ **Integrity**: Built-in validation and checksums
 
-### Training Adapters and Routers
+### 🏗️ Universal Architecture Support
+
+MoL now supports **ALL transformer architectures** available in HuggingFace Transformers (120+) with dynamic detection and secure loading:
+
+### 🔍 Automatic Architecture Detection
+
+- **Dynamic Discovery**: Automatically detects any transformer architecture
+- **Component Mapping**: Finds layers, embeddings, and LM heads automatically
+- **Architecture Classification**: Groups models into families (decoder-only, encoder-only, etc.)
+- **No Manual Updates**: Handles new architectures without code changes
+
+### 🛡️ Security First
+
+```python
+# Secure by default - no remote code execution
+config = MoLConfig(
+    models=["gpt2", "bert-base-uncased", "t5-small"],
+    trust_remote_code=False  # Default: secure
+)
+
+# Only enable for trusted models
+config_trusted = MoLConfig(
+    models=["custom-model-requiring-remote-code"],
+    trust_remote_code=True  # Explicit opt-in with warnings
+)
+```
+
+### 🏷️ Supported Architecture Families
+
+| Family | Examples | MoL Support |
+|--------|----------|-------------|
+| **Decoder-Only** | GPT-2, GPT-Neo, Llama, Mistral, Falcon, OPT, BLOOM, Qwen, Yi | ✅ Full Support |
+| **Encoder-Only** | BERT, RoBERTa, DistilBERT, ELECTRA, DeBERTa, ALBERT | ✅ Full Support |
+| **Encoder-Decoder** | T5, BART, Pegasus, Marian, UL2, FLAN-T5 | ✅ Full Support |
+| **Vision** | ViT, DeiT, Swin, BEiT, ConvNeXt | ✅ Full Support |
+| **Multimodal** | CLIP, FLAVA, LayoutLM, LXMERT | ✅ Full Support |
+
+### 💡 Usage Examples
+
+```python
+from mol import MoLRuntime, MoLConfig
+
+# Mix different architecture families
+config = MoLConfig(
+    models=[
+        "gpt2",                    # Decoder-only
+        "bert-base-uncased",       # Encoder-only  
+        "t5-small",               # Encoder-decoder
+    ],
+    adapter_type="linear",
+    router_type="simple"
+)
+
+mol_runtime = MoLRuntime(config)
+mol_runtime.setup_embeddings()
+mol_runtime.setup_lm_head()
+
+# Add fusion layers from different architectures
+mol_runtime.add_layer([
+    ("gpt2", 0),
+    ("bert-base-uncased", 0),
+    ("t5-small", 0)
+], layer_idx=0)
+```
+
+### 🔧 Architecture Handler
+
+```python
+from mol.core import UniversalArchitectureHandler
+
+# Create handler (secure by default)
+handler = UniversalArchitectureHandler(trust_remote_code=False)
+
+# Detect any architecture
+arch_info = handler.detect_architecture("microsoft/DialoGPT-medium")
+print(f"Architecture: {arch_info.architecture_type}")
+print(f"Family: {arch_info.architecture_family}")
+print(f"Layers: {arch_info.num_layers}")
+print(f"Hidden Dim: {arch_info.hidden_dim}")
+print(f"Layer Path: {arch_info.layer_path}")
+print(f"Supports Causal LM: {arch_info.supports_causal_lm}")
+```
+
+### ⚡ Performance Features
+
+- **Caching**: Architecture detection results are cached
+- **Lazy Loading**: Models loaded only when needed
+- **Memory Efficient**: Smart device placement and memory management
+- **Fast Introspection**: Quick component discovery without full model loading
+
+### 🔒 Security Configuration
+
+```bash
+# CLI with security options
+mol-merge config.yml ./output --trust-remote-code  # Explicit opt-in
+mol-merge config.yml ./output                      # Secure by default
+
+# Configuration file
+merge_method: slerp
+models:
+  - gpt2
+  - bert-base-uncased
+trust_remote_code: false  # Default: secure
+output_path: ./merged_model
+```
+
+## Training Adapters and Routers
 ```python
 from mol.training.trainer import MoLTrainer, TrainingConfig
 

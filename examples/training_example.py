@@ -16,10 +16,7 @@ def training_example():
     
     # Configuration for MoL system
     mol_config = MoLConfig(
-        models=[
-            "microsoft/DialoGPT-small",  # ~117M parameters
-            "distilgpt2",                # ~82M parameters
-        ],
+        models=['Qwen/Qwen3-0.6B', 'LiquidAI/LFM2-350M'],
         adapter_type="linear",
         router_type="simple",
         max_layers=2,  # Only use 2 layers for quick training demo
@@ -36,7 +33,7 @@ def training_example():
         weight_decay=0.01,
         batch_size=2,  # Small batch for demo
         max_epochs=1,
-        max_steps=50,  # Just a few steps for demo
+        # max_steps=50,  # Just a few steps for demo
         warmup_steps=5,
         logging_steps=5,
         eval_steps=20,
@@ -67,14 +64,14 @@ def training_example():
     
     # Layer 0: Mix early layers from both models
     mol_runtime.add_layer([
-        ("microsoft/DialoGPT-small", 0),
-        ("distilgpt2", 0)
+        ("LiquidAI/LFM2-350M", 0),
+        ("Qwen/Qwen3-0.6B", 0)
     ], layer_idx=0)
     
     # Layer 1: Mix different layers for diversity
     mol_runtime.add_layer([
-        ("microsoft/DialoGPT-small", 2),
-        ("distilgpt2", 1)
+        ("LiquidAI/LFM2-350M", 2),
+        ("Qwen/Qwen3-0.6B", 1)
     ], layer_idx=1)
     
     print(f"Added {len(mol_runtime.layers)} MoL layers")

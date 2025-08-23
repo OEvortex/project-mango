@@ -15,6 +15,7 @@ mol/core/adapters.py
 mol/core/block_extractor.py
 mol/core/mol_runtime.py
 mol/core/routers.py
+mol/core/universal_architecture.py
 mol/merge_methods/__init__.py
 mol/merge_methods/base_merge.py
 mol/merge_methods/linear.py
@@ -40,3 +41,4 @@ tests/test_adapters.py
 tests/test_hf_utils.py
 tests/test_routers.py
 tests/test_safetensors.py
+tests/test_universal_architecture.py
