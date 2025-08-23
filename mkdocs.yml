@@ -1,0 +1,236 @@
+site_name: Project Mango - MoL System Documentation
+site_description: Modular Layer (MoL) System for Dynamic LLM Fusion with Advanced Model Merging
+site_author: Project Mango Team
+site_url: https://your-username.github.io/project-mango
+
+repo_name: OEvortex/project-mango
+repo_url: https://github.com/OEvortex/project-mango
+edit_uri: edit/main/docs/
+
+# Copyright
+copyright: Copyright &copy; 2024 Project Mango Team
+
+# Configuration
+theme:
+  name: material
+  custom_dir: docs/overrides
+  
+  # Color scheme
+  palette:
+    # Palette toggle for light mode
+    - scheme: default
+      primary: orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    
+    # Palette toggle for dark mode  
+    - scheme: slate
+      primary: orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+  # Features
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.indexes
+    - toc.follow
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - content.action.view
+
+  # Fonts
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+  # Favicon and logo
+  favicon: assets/favicon.png
+  logo: assets/logo.png
+
+# Plugins
+plugins:
+  - search:
+      lang: en
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_category_heading: true
+            merge_init_into_class: true
+  - git-revision-date-localized:
+      type: datetime
+      enable_creation_date: true
+  - minify:
+      minify_html: true
+  - social:
+      cards_layout_options:
+        background_color: "#FF6B35"
+
+# Extensions
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:materialx.emoji.to_svg
+      emoji_index: !!python/name:materialx.emoji.twemoji
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: OEvortex
+      repo: project-mango
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# Navigation
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Configuration: configuration.md
+  - Architecture: architecture.md
+  
+  - Tutorials:
+    - tutorials/index.md
+    - Your First Fusion: tutorials/basic-fusion.md
+    - Understanding Adapters: tutorials/adapters.md
+    - Router Basics: tutorials/routers.md
+    - Model Merging: tutorials/model-merging.md
+    - Training Guide: tutorials/training.md
+    - Large Models: tutorials/large-models.md
+    - Multi-Architecture: tutorials/multi-architecture.md
+    - Custom Components: tutorials/custom-components.md
+    - Production Deploy: tutorials/deployment.md
+    
+  - Examples:
+    - examples/index.md
+    - Text Generation: examples/text-generation.md
+    - Question Answering: examples/question-answering.md
+    - Code Generation: examples/code-generation.md
+    - Multi-Domain Chat: examples/multi-domain-chat.md
+    
+  - API Reference:
+    - api/index.md
+    - Core:
+      - MoLRuntime: api/core/mol-runtime.md
+      - MoLConfig: api/core/mol-config.md
+      - Adapters: api/core/adapters.md
+      - Routers: api/core/routers.md
+      - Block Extractor: api/core/block-extractor.md
+      - Universal Architecture: api/core/universal-architecture.md
+    - Merge Methods:
+      - Base Merge: api/merge-methods/base-merge.md
+      - SLERP: api/merge-methods/slerp.md
+      - TIES: api/merge-methods/ties.md
+      - Task Arithmetic: api/merge-methods/task-arithmetic.md
+      - Linear: api/merge-methods/linear.md
+    - Training:
+      - MoLTrainer: api/training/trainer.md
+      - Training Config: api/training/config.md
+    - Utils:
+      - Memory Utils: api/utils/memory-utils.md
+      - Model Utils: api/utils/model-utils.md
+      - SafeTensors Utils: api/utils/safetensors-utils.md
+      - HF Utils: api/utils/hf-utils.md
+    - CLI:
+      - Merge CLI: api/cli/merge-cli.md
+      - Validate CLI: api/cli/validate-cli.md
+      - Examples CLI: api/cli/examples-cli.md
+      
+  - Advanced:
+    - advanced/index.md
+    - Performance Tuning: advanced/performance-tuning.md
+    - Memory Management: advanced/memory-management.md
+    - Distributed Training: advanced/distributed-training.md
+    - Custom Components: advanced/custom-components.md
+    - Production Deployment: advanced/production-deployment.md
+    - Security: advanced/security.md
+    - Research Workflows: advanced/research-workflows.md
+    
+  - Development:
+    - development.md
+    - Contributing: CONTRIBUTING.md
+    - Code of Conduct: CODE_OF_CONDUCT.md
+    - Changelog: CHANGELOG.md
+
+# Extra
+extra:
+  version:
+    provider: mike
+    default: stable
+  
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/OEvortex/project-mango
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/project-mango-mol/
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/project-mango
+    - icon: fontawesome/brands/twitter
+      link: https://twitter.com/project_mango
+      
+  analytics:
+    provider: google
+    property: G-XXXXXXXXXX
+    
+  consent:
+    title: Cookie consent
+    description: >-
+      We use cookies to recognize your repeated visits and preferences, as well
+      as to measure the effectiveness of our documentation and whether users
+      find what they're searching for. With your consent, you're helping us to
+      make our documentation better.
+
+# Extra CSS and JavaScript
+extra_css:
+  - stylesheets/extra.css
+  - stylesheets/mango-theme.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+  - javascripts/extra.js

@@ -1,17 +1,37 @@
 # Project Mango - Enhanced MoL System 🥭
 
-**Modular Layer (MoL) System for LLMs with Advanced Model Merging**
+**Modular Layer (MoL) System for Dynamic Fusion and Static Merging of LLMs**
 
-A powerful toolkit that combines:
-- 🔄 **Dynamic runtime fusion** of transformer layers from different LLMs  
-- 🔀 **MergeKit-style model merging** with SLERP, TIES, Task Arithmetic, and Linear methods
-- ⚡ **Memory-efficient operations** with lazy loading and smart device placement
-- 🛠️ **YAML configuration system** for easy merge specification
-- 🖥️ **CLI interface** similar to mergekit-yaml
+Project Mango provides **two powerful approaches** for combining transformer models:
+
+## 🔄 **FUSION** - Dynamic Runtime Combination
+- **Smart routing** between multiple model experts at inference time
+- **Preserves all models** as separate experts with intelligent selection
+- **Adaptive behavior** - different experts for different inputs
+- **Memory efficient** with lazy loading and smart device placement
+- **Trainable components** - fine-tune adapters and routers
+
+## 🔀 **MERGE** - Static Model Combination  
+- **MergeKit-style merging** with SLERP, TIES, Task Arithmetic, and Linear methods
+- **Creates single unified model** by combining weights permanently
+- **Smaller final size** - one model instead of multiple experts
+- **YAML configuration system** for complex merge specifications
+- **CLI interface** similar to mergekit-yaml
+
+### 🎯 **When to Use Which?**
+
+| Use Case | Recommendation | Why |
+|----------|----------------|-----|
+| **Diverse inputs** (chat + code + science) | 🔄 **Fusion** | Dynamic expert selection adapts to input type |
+| **Uniform inputs** (only chat or only code) | 🔀 **Merge** | Simpler, faster, smaller final model |
+| **Experimentation** | 🔄 **Fusion** | Easy to adjust expert combinations |
+| **Production deployment** | 🔀 **Merge** | Single model, predictable performance |
+| **Limited memory** | 🔀 **Merge** | Smaller memory footprint |
+| **Maximum flexibility** | 🔄 **Fusion** | Best of both worlds dynamically |
 
 ## 🚀 Quick Start
 
-### Model Merging (MergeKit-style)
+### 🔀 **MERGE** - Static Model Combination (MergeKit-style)
 
 **Using CLI:**
 ```bash
@@ -44,8 +64,11 @@ merged = slerp.merge(models)
 slerp.save_merged_model(merged)
 ```
 
-## Architecture
+## 🏢 System Architecture
 
+Project Mango implements **two complementary approaches**:
+
+### 🔄 **FUSION Architecture** (Dynamic MoL Runtime)
 The MoL system consists of:
 
 1. **Block Extractors**: Extract transformer blocks from different model architectures
@@ -54,9 +77,20 @@ The MoL system consists of:
 4. **MoL Runtime**: Orchestrates the entire fusion process
 5. **Training Pipeline**: Fine-tune adapters and routers for optimal performance
 
-## Examples
+### 🔀 **MERGE Architecture** (Static Combination)
+The merge system provides:
 
-### Running the Comprehensive Demo
+1. **Merge Methods**: SLERP, TIES, Task Arithmetic, Linear algorithms
+2. **Configuration Parser**: YAML-based merge specifications
+3. **Model Loader**: Universal model loading and validation
+4. **Weight Combiner**: Intelligent parameter combination
+5. **Output Generator**: Creates unified model files
+
+## 📝 Examples
+
+### 🔄 **FUSION Examples** - Dynamic Runtime
+
+#### Running the Comprehensive Demo
 ```bash
 # Basic inference demonstration
 python examples/comprehensive_demo.py --inference-only --small-models
@@ -68,7 +102,101 @@ python examples/comprehensive_demo.py --train --eval --small-models
 python examples/comprehensive_demo.py --train --eval
 ```
 
-### Basic Layer Fusion
+#### Multi-Domain Chatbot (Dynamic Expert Selection)
+```python
+from mol import MoLRuntime, MoLConfig
+
+# Configure fusion for diverse inputs
+config = MoLConfig(
+    models=[
+        "microsoft/DialoGPT-small",    # Conversational expert
+        "Salesforce/codet5-small",     # Code expert
+        "allenai/scibert_scivocab_uncased"  # Science expert
+    ],
+    adapter_type="linear",
+    router_type="token_level",  # Per-token expert selection
+    max_layers=4
+)
+
+mol = MoLRuntime(config)
+mol.setup_embeddings()
+mol.setup_lm_head()
+
+# Add fusion layers
+for i in range(4):
+    mol.add_layer([
+        ("microsoft/DialoGPT-small", i),
+        ("Salesforce/codet5-small", i), 
+        ("allenai/scibert_scivocab_uncased", i)
+    ], layer_idx=i)
+
+# Test with different input types
+test_inputs = [
+    "Hello, how are you today?",                    # Conversational
+    "def fibonacci(n): return",                      # Code
+    "The photosynthesis process involves"             # Science
+]
+
+for text in test_inputs:
+    inputs = mol.tokenizer(text, return_tensors="pt")
+    hidden_states, router_stats = mol.forward(
+        inputs['input_ids'], 
+        inputs['attention_mask'],
+        return_router_stats=True
+    )
+    print(f"Input: {text}")
+    print(f"Expert selection: {router_stats}")
+    print()
+```
+
+### 🔀 **MERGE Examples** - Static Combination
+
+#### SLERP Merge for Balanced Models
+```bash
+# Using CLI
+mol-merge examples ./configs
+mol-merge ./configs/slerp_example.yml ./balanced_model --device cuda
+```
+
+```python
+# Using Python API
+from mol import SlerpMerge
+from mol.config import MergeConfig
+
+# Create balanced model from chat and instruct variants
+config = MergeConfig(
+    method="slerp",
+    models=["microsoft/DialoGPT-medium", "microsoft/DialoGPT-large"],
+    parameters={"t": 0.5},  # 50-50 balance
+    output_path="./balanced_chatbot"
+)
+
+merge = SlerpMerge(config)
+models = merge.load_models()
+merged = merge.merge(models)
+merge.save_merged_model(merged)
+```
+
+#### TIES Merge for Capability Enhancement
+```python
+# Combine base model with multiple fine-tuned variants
+config = MergeConfig(
+    method="ties",
+    base_model="gpt2",
+    models=[
+        "gpt2-finetuned-poetry",
+        "gpt2-finetuned-science", 
+        "gpt2-finetuned-code"
+    ],
+    parameters={
+        "density": 0.8,
+        "normalize": True
+    },
+    output_path="./enhanced_gpt2"
+)
+```
+
+### 🔄 **FUSION** - Dynamic Runtime Combination
 ```python
 from mol import MoLRuntime
 from mol.core.mol_runtime import MoLConfig
@@ -329,12 +457,27 @@ This project follows a phased development approach:
 
 ### Current Capabilities
 
-✅ **Core Components**:
+✅ **🔄 FUSION Components**:
 - Linear and Bottleneck adapters with identity initialization
 - SimpleRouter (pooled) and TokenLevelRouter (per-token) with top-k routing
 - Support for GPT-2, GPT-Neo, GPT-J, LLaMA, BERT, RoBERTa, DistilBERT architectures
 - Memory-efficient lazy loading and offloading
 - Comprehensive training pipeline with adapter/router optimization
+
+✅ **🔀 MERGE Components**:
+- SLERP (Spherical Linear Interpolation) for smooth model blending
+- TIES (Trim, Elect Sign, Disjoint Merge) for advanced capability combination
+- Task Arithmetic for precise capability manipulation
+- Linear weighted averaging with fine-grained control
+- YAML configuration system for complex merge specifications
+- CLI interface with validation and batch processing
+
+✅ **🔍 Universal Features**:
+- Support for 120+ transformer architectures from Hugging Face
+- SafeTensors integration for secure model serialization
+- Hugging Face Hub integration for easy model sharing
+- Automatic architecture detection and component mapping
+- Security-first design with configurable trust levels
 
 ✅ **Training Features**:
 - Identity initialization for warm start
@@ -350,4 +493,4 @@ This project follows a phased development approach:
 
 ## License
 
-MIT License - see LICENSE file for details.
+Apache License 2.0 - see [LICENSE](LICENSE) file for details.

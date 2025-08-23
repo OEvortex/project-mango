@@ -1,0 +1,407 @@
+/* Project Mango Documentation Styles */
+
+:root {
+  /* Mango brand colors */
+  --mango-primary: #FF6B35;
+  --mango-secondary: #F7931E;
+  --mango-accent: #FFD23F;
+  --mango-dark: #2E2E2E;
+  --mango-light: #FFF8F0;
+  
+  /* Additional colors */
+  --success-color: #4CAF50;
+  --warning-color: #FF9800;
+  --error-color: #F44336;
+  --info-color: #2196F3;
+}
+
+/* Logo and branding */
+.md-header__title {
+  font-weight: 600;
+  color: var(--mango-primary);
+}
+
+.md-logo img {
+  height: 2rem;
+  width: auto;
+}
+
+/* Navigation styling */
+.md-nav__item--active > .md-nav__link {
+  color: var(--mango-primary);
+  font-weight: 600;
+}
+
+.md-tabs__link--active {
+  color: var(--mango-primary);
+  border-bottom: 2px solid var(--mango-primary);
+}
+
+/* Code blocks */
+.highlight {
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.highlight pre {
+  padding: 1rem;
+}
+
+/* Copy button for code blocks */
+.md-clipboard {
+  background-color: var(--mango-primary);
+  border-radius: 4px;
+}
+
+.md-clipboard:hover {
+  background-color: var(--mango-secondary);
+}
+
+/* Admonitions */
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-color: var(--success-color);
+}
+
+.md-typeset .admonition.tip > .admonition-title,
+.md-typeset details.tip > .admonition-title {
+  background-color: rgba(76, 175, 80, 0.1);
+  border-color: var(--success-color);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-color: var(--warning-color);
+}
+
+.md-typeset .admonition.warning > .admonition-title,
+.md-typeset details.warning > .admonition-title {
+  background-color: rgba(255, 152, 0, 0.1);
+  border-color: var(--warning-color);
+}
+
+.md-typeset .admonition.danger,
+.md-typeset details.danger {
+  border-color: var(--error-color);
+}
+
+.md-typeset .admonition.danger > .admonition-title,
+.md-typeset details.danger > .admonition-title {
+  background-color: rgba(244, 67, 54, 0.1);
+  border-color: var(--error-color);
+}
+
+/* Custom badges */
+.badge {
+  display: inline-block;
+  padding: 0.25em 0.6em;
+  font-size: 0.75em;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: baseline;
+  border-radius: 0.375rem;
+}
+
+.badge-primary {
+  color: #fff;
+  background-color: var(--mango-primary);
+}
+
+.badge-secondary {
+  color: #fff;
+  background-color: var(--mango-secondary);
+}
+
+.badge-success {
+  color: #fff;
+  background-color: var(--success-color);
+}
+
+.badge-warning {
+  color: #212529;
+  background-color: var(--warning-color);
+}
+
+.badge-danger {
+  color: #fff;
+  background-color: var(--error-color);
+}
+
+.badge-info {
+  color: #fff;
+  background-color: var(--info-color);
+}
+
+/* Tables */
+.md-typeset table:not([class]) {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--mango-light);
+  font-weight: 600;
+}
+
+.md-typeset table:not([class]) tr:nth-child(even) {
+  background-color: rgba(255, 107, 53, 0.05);
+}
+
+/* Cards and containers */
+.card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 1.5rem;
+  margin: 1rem 0;
+  border-left: 4px solid var(--mango-primary);
+}
+
+.card-header {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--mango-dark);
+  margin-bottom: 1rem;
+}
+
+.card-body {
+  color: #666;
+}
+
+/* Grid layout for cards */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+/* Feature highlights */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.feature-item {
+  padding: 1rem;
+  background: var(--mango-light);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 107, 53, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.feature-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(255, 107, 53, 0.2);
+}
+
+.feature-icon {
+  font-size: 2rem;
+  color: var(--mango-primary);
+  margin-bottom: 0.5rem;
+}
+
+.feature-title {
+  font-weight: 600;
+  color: var(--mango-dark);
+  margin-bottom: 0.5rem;
+}
+
+.feature-description {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+/* Progress indicators */
+.progress {
+  width: 100%;
+  height: 0.5rem;
+  background-color: #e9ecef;
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background-color: var(--mango-primary);
+  transition: width 0.6s ease;
+}
+
+/* Status indicators */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.status-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+}
+
+.status-complete .status-icon {
+  background-color: var(--success-color);
+}
+
+.status-in-progress .status-icon {
+  background-color: var(--warning-color);
+}
+
+.status-pending .status-icon {
+  background-color: #ccc;
+}
+
+.status-error .status-icon {
+  background-color: var(--error-color);
+}
+
+/* Difficulty levels */
+.difficulty {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.difficulty-star {
+  color: var(--mango-secondary);
+}
+
+.difficulty-star.filled {
+  color: var(--mango-primary);
+}
+
+/* API reference styling */
+.api-signature {
+  background: var(--mango-light);
+  border: 1px solid rgba(255, 107, 53, 0.2);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9rem;
+}
+
+.api-param {
+  margin: 0.5rem 0;
+}
+
+.api-param-name {
+  font-weight: 600;
+  color: var(--mango-primary);
+}
+
+.api-param-type {
+  color: #666;
+  font-style: italic;
+}
+
+.api-param-description {
+  margin-top: 0.25rem;
+  color: #333;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .card {
+    padding: 1rem;
+  }
+}
+
+/* Print styles */
+@media print {
+  .md-header,
+  .md-tabs,
+  .md-footer,
+  .md-sidebar {
+    display: none !important;
+  }
+  
+  .md-content {
+    margin: 0 !important;
+  }
+  
+  .md-typeset {
+    font-size: 12px;
+  }
+}
+
+/* Dark mode adjustments */
+[data-md-color-scheme="slate"] {
+  --mango-light: rgba(255, 107, 53, 0.1);
+  --mango-dark: #fff;
+}
+
+[data-md-color-scheme="slate"] .card {
+  background: var(--md-default-bg-color);
+  border-left-color: var(--mango-primary);
+}
+
+[data-md-color-scheme="slate"] .feature-item {
+  background: rgba(255, 107, 53, 0.1);
+  border-color: rgba(255, 107, 53, 0.3);
+}
+
+[data-md-color-scheme="slate"] .api-signature {
+  background: rgba(255, 107, 53, 0.1);
+  border-color: rgba(255, 107, 53, 0.3);
+}
+
+/* Animation utilities */
+.fade-in {
+  animation: fadeIn 0.5s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.slide-up {
+  animation: slideUp 0.5s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--mango-primary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--mango-secondary);
+}

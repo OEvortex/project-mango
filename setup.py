@@ -13,11 +13,12 @@ setup(
     description="Modular Layer (MoL) system for fusing transformer blocks from different LLMs",
     long_description=long_description,
     long_description_content_type="text/markdown",
+    url="https://github.com/OEvortex/project-mango",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
