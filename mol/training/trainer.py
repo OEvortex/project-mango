@@ -194,10 +194,10 @@ class MoLTrainer:
         # Loss components for logging
         loss_components = {
             'lm_loss': lm_loss.item(),
-            'entropy_penalty': entropy_penalty.item(),
-            'load_balance_loss': load_balance_loss.item(),
+            'entropy_penalty': entropy_penalty.item() if torch.is_tensor(entropy_penalty) else entropy_penalty,
+            'load_balance_loss': load_balance_loss.item() if torch.is_tensor(load_balance_loss) else load_balance_loss,
             'total_loss': total_loss.item(),
-            'router_entropy': total_entropy_loss,
+            'router_entropy': total_entropy_loss if isinstance(total_entropy_loss, (int, float)) else total_entropy_loss.item(),
         }
         
         return total_loss, loss_components

@@ -496,28 +496,75 @@ class UniversalArchitectureHandler:
         return None
     
     def _introspect_lm_head_path(self, model: nn.Module, config) -> Optional[str]:
-        """Find LM head through model introspection."""
+        """Find LM head through comprehensive model introspection using transformers methods."""
         vocab_size = getattr(config, 'vocab_size', None)
         hidden_size = getattr(config, 'hidden_size', getattr(config, 'd_model', None))
         
-        # Look for linear layers that map from hidden_size to vocab_size
+        logger.debug(f"Looking for LM head with vocab_size={vocab_size}, hidden_size={hidden_size}")
+        
+        # First try: Use transformers' standard get_output_embeddings method
+        try:
+            if hasattr(model, 'get_output_embeddings'):
+                output_embeddings = model.get_output_embeddings()
+                if output_embeddings is not None:
+                    # Find the path to this module
+                    for name, module in model.named_modules():
+                        if module is output_embeddings:
+                            logger.debug(f"Found LM head via get_output_embeddings: {name}")
+                            return name
+        except Exception as e:
+            logger.debug(f"get_output_embeddings failed: {e}")
+        
+        # Second try: Look for standard LM head attributes
+        standard_lm_head_names = ['lm_head', 'head', 'classifier', 'cls']
+        for attr_name in standard_lm_head_names:
+            if hasattr(model, attr_name):
+                attr_module = getattr(model, attr_name)
+                if attr_module is not None and isinstance(attr_module, nn.Linear):
+                    if vocab_size and attr_module.out_features == vocab_size:
+                        logger.debug(f"Found LM head via standard attribute: {attr_name}")
+                        return attr_name
+        
+        # Third try: Look for linear layers that map from hidden_size to vocab_size
+        # But exclude embedding layers (they typically have different patterns)
+        candidates = []
+        
         for name, module in model.named_modules():
+            # Skip if this looks like an embedding layer
+            if any(embed_term in name.lower() for embed_term in ['embed', 'embedding', 'wte', 'word']):
+                continue
+                
             if isinstance(module, nn.Linear) and vocab_size and hidden_size:
-                if (module.in_features == hidden_size and 
-                    module.out_features == vocab_size):
-                    return name
-            
-            # Also check for modules that might contain such layers
+                if (module.in_features == hidden_size and module.out_features == vocab_size):
+                    # Calculate path depth (prefer closer to root for LM heads)
+                    path_depth = len(name.split('.'))
+                    candidates.append((name, module, path_depth))
+                    logger.debug(f"Found LM head candidate: {name} ({module.in_features}->{module.out_features})")
+        
+        if candidates:
+            # Sort by path depth (LM heads are usually close to root)
+            candidates.sort(key=lambda x: x[2])
+            best_candidate = candidates[0]
+            logger.debug(f"Selected best LM head candidate: {best_candidate[0]}")
+            return best_candidate[0]
+        
+        # Fourth try: Look for modules with weight tensors that match LM head pattern
+        for name, module in model.named_modules():
+            # Skip embedding-like names
+            if any(embed_term in name.lower() for embed_term in ['embed', 'embedding', 'wte', 'word']):
+                continue
+                
             if hasattr(module, 'weight') and vocab_size and hidden_size:
                 try:
                     weight = module.weight
                     if hasattr(weight, 'shape') and len(weight.shape) == 2:
-                        if (weight.shape[0] == vocab_size and 
-                            weight.shape[1] == hidden_size):
+                        if (weight.shape[0] == vocab_size and weight.shape[1] == hidden_size):
+                            logger.debug(f"Found LM head via weight pattern: {name} {weight.shape}")
                             return name
                 except Exception:
                     continue
         
+        logger.debug("Could not find LM head through introspection")
         return None
     
     def _navigate_to_attribute(self, obj: nn.Module, path: str) -> Any:
@@ -802,16 +849,41 @@ class UniversalArchitectureHandler:
             raise ValueError(f"Could not access embeddings at {arch_info.embedding_path}: {e}")
     
     def get_lm_head(self, model: nn.Module, arch_info: ArchitectureInfo) -> Optional[nn.Module]:
-        """Get LM head from model using detected path."""
-        if not arch_info.lm_head_path:
-            return None
-        
+        """Get LM head from model using transformers standard methods and detected path."""
+        # First try: Use transformers' standard method
         try:
-            lm_head = self._navigate_to_attribute(model, arch_info.lm_head_path)
-            return lm_head
+            if hasattr(model, 'get_output_embeddings'):
+                lm_head = model.get_output_embeddings()
+                if lm_head is not None:
+                    logger.debug(f"Found LM head via get_output_embeddings: {type(lm_head)}")
+                    return lm_head
         except Exception as e:
-            logger.warning(f"Could not access LM head at {arch_info.lm_head_path}: {e}")
-            return None
+            logger.debug(f"get_output_embeddings failed: {e}")
+        
+        # Second try: Use detected path if available
+        if arch_info.lm_head_path:
+            try:
+                lm_head = self._navigate_to_attribute(model, arch_info.lm_head_path)
+                if lm_head is not None:
+                    logger.debug(f"Found LM head via detected path {arch_info.lm_head_path}: {type(lm_head)}")
+                    return lm_head
+            except Exception as e:
+                logger.debug(f"Could not access LM head at {arch_info.lm_head_path}: {e}")
+        
+        # Third try: Standard attribute names
+        standard_names = ['lm_head', 'head', 'classifier', 'cls']
+        for name in standard_names:
+            try:
+                if hasattr(model, name):
+                    lm_head = getattr(model, name)
+                    if lm_head is not None:
+                        logger.debug(f"Found LM head via standard attribute {name}: {type(lm_head)}")
+                        return lm_head
+            except Exception as e:
+                logger.debug(f"Could not access {name}: {e}")
+        
+        logger.debug("No LM head found")
+        return None
     
     def clear_cache(self):
         """Clear architecture detection cache."""
