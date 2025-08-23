@@ -122,6 +122,32 @@ class ConfigValidator:
         for i, model in enumerate(models):
             if not isinstance(model, str):
                 raise ValueError(f"Model {i}: Must be a string")
+            
+            # Basic model name validation
+            if not model.strip():
+                raise ValueError(f"Model {i}: Cannot be empty or whitespace")
+            
+            # Check for common model naming patterns
+            if not self._is_valid_model_name(model):
+                logger.warning(f"Model {i} '{model}' may not be a valid HuggingFace model identifier")
+    
+    def _is_valid_model_name(self, model_name: str) -> bool:
+        """Basic validation of model name format."""
+        # Very basic checks for HuggingFace model naming
+        if '/' in model_name:
+            parts = model_name.split('/')
+            if len(parts) != 2:
+                return False
+            org, name = parts
+            if not org or not name:
+                return False
+        
+        # Check for invalid characters
+        invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
+        if any(char in model_name for char in invalid_chars):
+            return False
+        
+        return True
     
     def _validate_parameters(self, parameters: Dict[str, Any], method: str):
         """Validate parameters based on merge method."""

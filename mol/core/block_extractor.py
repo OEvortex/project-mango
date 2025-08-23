@@ -101,13 +101,22 @@ class BlockExtractor:
         
         try:
             # Load config and model
-            config = AutoConfig.from_pretrained(model_name)
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
+            
+            # Determine appropriate torch dtype
+            torch_dtype = torch.float16 if device != "cpu" else torch.float32
+            
             model = AutoModel.from_pretrained(
                 model_name,
-                torch_dtype=torch.float16,
+                torch_dtype=torch_dtype,
                 device_map=device if device != "cpu" else None,
-                low_cpu_mem_usage=True
+                low_cpu_mem_usage=True,
+                trust_remote_code=False
             )
+            
+            # Move to device if necessary
+            if device == "cpu":
+                model = model.to(device)
             
             # Extract model information
             architecture_type = self.get_architecture_type(model_name)
@@ -133,6 +142,9 @@ class BlockExtractor:
             
         except Exception as e:
             logger.error(f"Failed to load model {model_name}: {e}")
+            # Clear any partial cache entries
+            self.loaded_models.pop(model_name, None)
+            self.model_infos.pop(model_name, None)
             raise
     
     def get_model_layers(self, model: nn.Module, architecture_type: str) -> nn.ModuleList:
@@ -143,10 +155,21 @@ class BlockExtractor:
         
         # Navigate through nested attributes
         layers = model
-        for attr in layer_attr.split('.'):
-            layers = getattr(layers, attr)
-        
-        return layers
+        try:
+            for attr in layer_attr.split('.'):
+                if not hasattr(layers, attr):
+                    raise AttributeError(f"Model does not have attribute '{attr}' in path '{layer_attr}'")
+                layers = getattr(layers, attr)
+            
+            # Validate that we got a ModuleList or similar
+            if not hasattr(layers, '__iter__') or not hasattr(layers, '__len__'):
+                raise ValueError(f"Expected layers to be iterable, got {type(layers)}")
+            
+            return layers
+            
+        except AttributeError as e:
+            logger.error(f"Failed to extract layers from {architecture_type} model: {e}")
+            raise ValueError(f"Invalid layer path '{layer_attr}' for architecture '{architecture_type}': {e}")
     
     def extract_block(
         self, 
@@ -216,6 +239,11 @@ class BlockExtractor:
     
     def get_lm_head(self, model_name: str, device: str = "cpu") -> Optional[nn.Module]:
         """Get the language modeling head from a model."""
+        # Check if we already have this model's LM head cached
+        cache_key = f"{model_name}_lm_head"
+        if cache_key in self.loaded_models:
+            return self.loaded_models[cache_key]
+            
         try:
             # Load the full model with LM head
             from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
@@ -224,28 +252,45 @@ class BlockExtractor:
             if not model_info:
                 _, model_info = self.load_model(model_name, device)
             
-            # Try causal LM first, then masked LM
+            lm_head = None
+            torch_dtype = torch.float16 if device != "cpu" else torch.float32
+            
+            # Try causal LM first
             try:
                 full_model = AutoModelForCausalLM.from_pretrained(
                     model_name,
-                    torch_dtype=torch.float16,
+                    torch_dtype=torch_dtype,
                     device_map=device if device != "cpu" else None,
-                    low_cpu_mem_usage=True
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=False
                 )
                 lm_head = getattr(full_model, 'lm_head', None)
-            except:
+                if device == "cpu":
+                    lm_head = lm_head.to(device) if lm_head else None
+                    
+            except Exception as e1:
+                logger.debug(f"Could not load as causal LM: {e1}")
+                # Try masked LM
                 try:
                     full_model = AutoModelForMaskedLM.from_pretrained(
                         model_name,
-                        torch_dtype=torch.float16,
+                        torch_dtype=torch_dtype,
                         device_map=device if device != "cpu" else None,
-                        low_cpu_mem_usage=True
+                        low_cpu_mem_usage=True,
+                        trust_remote_code=False
                     )
                     lm_head = getattr(full_model, 'cls', None)
-                except:
-                    logger.warning(f"Could not load LM head for {model_name}")
-                    return None
+                    if not lm_head:
+                        lm_head = getattr(full_model, 'lm_head', None)
+                    if device == "cpu":
+                        lm_head = lm_head.to(device) if lm_head else None
+                        
+                except Exception as e2:
+                    logger.warning(f"Could not load LM head for {model_name} as either causal or masked LM: {e1}, {e2}")
+                    lm_head = None
             
+            # Cache the result (even if None)
+            self.loaded_models[cache_key] = lm_head
             return lm_head
             
         except Exception as e:

@@ -162,6 +162,14 @@ class BottleneckAdapter(BaseAdapter):
         """Forward pass through bottleneck adapter."""
         original_x = x
         
+        # Check for NaN or inf in input
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            logger.warning("NaN or inf detected in adapter input")
+            if self.use_residual:
+                return original_x
+            else:
+                return torch.zeros_like(x)
+        
         # Down projection
         x = self.down_proj(x)
         x = self.activation(x)
@@ -169,11 +177,20 @@ class BottleneckAdapter(BaseAdapter):
         
         # Up projection
         x = self.up_proj(x)
+        
+        # Apply layer norm before residual
         x = self.layer_norm(x)
         
         # Add residual connection if dimensions match
         if self.use_residual:
-            x = x + original_x
+            # Scale the adapter output for better training stability
+            adapter_scale = 0.1  # Small scaling factor
+            x = original_x + adapter_scale * x
+        
+        # Final check for valid output
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            logger.warning("NaN or inf detected in adapter output, returning input")
+            return original_x if self.use_residual else torch.zeros_like(original_x)
         
         return x
 

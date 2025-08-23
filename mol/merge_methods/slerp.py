@@ -136,10 +136,23 @@ class SlerpMerge(BaseMergeMethod):
         if t == 1.0:
             return t2.clone()
         
+        # Ensure tensors are on the same device
+        if t1.device != t2.device:
+            t2 = t2.to(t1.device)
+        
         # Flatten tensors for computation
         original_shape = t1.shape
         v1 = t1.flatten()
         v2 = t2.flatten()
+        
+        # Check for NaN or inf values
+        if torch.isnan(v1).any() or torch.isnan(v2).any():
+            logger.warning("NaN values detected in input tensors, using linear interpolation")
+            return self.interpolate_weights(t1, t2, t)
+        
+        if torch.isinf(v1).any() or torch.isinf(v2).any():
+            logger.warning("Inf values detected in input tensors, using linear interpolation")
+            return self.interpolate_weights(t1, t2, t)
         
         # Normalize vectors
         v1_norm = torch.norm(v1)
@@ -148,6 +161,7 @@ class SlerpMerge(BaseMergeMethod):
         if v1_norm < self.eps or v2_norm < self.eps:
             # One vector is near zero, use linear interpolation
             if self.fallback_linear:
+                logger.debug("One vector near zero, using linear interpolation")
                 result = self.interpolate_weights(t1, t2, t)
                 return result
             else:
@@ -156,44 +170,67 @@ class SlerpMerge(BaseMergeMethod):
         v1_unit = v1 / v1_norm
         v2_unit = v2 / v2_norm
         
-        # Compute dot product
+        # Compute dot product with clamping for numerical stability
         dot = torch.dot(v1_unit, v2_unit)
-        dot = torch.clamp(dot, -1.0 + self.eps, 1.0 - self.eps)  # Numerical stability
+        dot = torch.clamp(dot, -1.0 + self.eps, 1.0 - self.eps)
         
         # Check if vectors are nearly collinear
-        if abs(dot) > (1.0 - self.eps):
+        if abs(dot.item()) > (1.0 - self.eps):
             # Vectors are nearly parallel/antiparallel, use linear interpolation
             if self.fallback_linear:
+                logger.debug(f"Vectors nearly collinear (dot={dot.item():.6f}), using linear interpolation")
                 result = self.interpolate_weights(t1, t2, t)
                 return result
             else:
                 return t1.clone()
         
         # Compute angle between vectors
-        theta = math.acos(float(dot))
-        sin_theta = math.sin(theta)
+        try:
+            theta = torch.acos(dot)
+        except RuntimeError:
+            # Numerical issues with acos, fall back to linear
+            logger.warning("Numerical issues with acos, using linear interpolation")
+            return self.interpolate_weights(t1, t2, t)
+        
+        sin_theta = torch.sin(theta)
         
         if sin_theta < self.eps:
             # Angle is too small, use linear interpolation
             if self.fallback_linear:
+                logger.debug(f"Angle too small (sin_theta={sin_theta.item():.6f}), using linear interpolation")
                 result = self.interpolate_weights(t1, t2, t)
                 return result
             else:
                 return t1.clone()
         
         # SLERP computation
-        factor1 = math.sin((1.0 - t) * theta) / sin_theta
-        factor2 = math.sin(t * theta) / sin_theta
-        
-        # Interpolate unit vectors
-        v_slerp = factor1 * v1_unit + factor2 * v2_unit
-        
-        # Scale by interpolated norm
-        interpolated_norm = (1.0 - t) * v1_norm + t * v2_norm
-        result = v_slerp * interpolated_norm
-        
-        # Reshape back to original shape
-        return result.view(original_shape)
+        try:
+            factor1 = torch.sin((1.0 - t) * theta) / sin_theta
+            factor2 = torch.sin(t * theta) / sin_theta
+            
+            # Check for numerical issues
+            if torch.isnan(factor1) or torch.isnan(factor2):
+                logger.warning("NaN in SLERP factors, using linear interpolation")
+                return self.interpolate_weights(t1, t2, t)
+            
+            # Interpolate unit vectors
+            v_slerp = factor1 * v1_unit + factor2 * v2_unit
+            
+            # Scale by interpolated norm
+            interpolated_norm = (1.0 - t) * v1_norm + t * v2_norm
+            result = v_slerp * interpolated_norm
+            
+            # Check result for validity
+            if torch.isnan(result).any() or torch.isinf(result).any():
+                logger.warning("Invalid SLERP result, using linear interpolation")
+                return self.interpolate_weights(t1, t2, t)
+            
+            # Reshape back to original shape
+            return result.view(original_shape)
+            
+        except Exception as e:
+            logger.warning(f"SLERP computation failed: {e}, using linear interpolation")
+            return self.interpolate_weights(t1, t2, t)
     
     def gradient_slerp(
         self, 

@@ -61,28 +61,52 @@ class BaseMergeMethod(ABC):
         from transformers import AutoModel, AutoConfig
         
         models = {}
+        failed_models = []
+        
         for model_name in self.config.models:
             try:
                 logger.info(f"Loading model: {model_name}")
                 
                 # Load config first
-                config = AutoConfig.from_pretrained(model_name)
+                config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
                 self.model_configs[model_name] = config
                 
-                # Load model
+                # Determine appropriate torch dtype
+                if hasattr(torch, self.config.dtype):
+                    torch_dtype = getattr(torch, self.config.dtype)
+                else:
+                    logger.warning(f"Unknown dtype {self.config.dtype}, using float16")
+                    torch_dtype = torch.float16
+                
+                # Load model with appropriate settings
                 model = AutoModel.from_pretrained(
                     model_name,
-                    torch_dtype=getattr(torch, self.config.dtype),
+                    torch_dtype=torch_dtype,
                     device_map=self.config.device if self.config.device != "cpu" else None,
-                    low_cpu_mem_usage=True
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=False
                 )
                 
+                # Move to device if CPU
+                if self.config.device == "cpu":
+                    model = model.to(self.config.device)
+                
                 models[model_name] = model
-                logger.info(f"Successfully loaded {model_name}")
+                logger.info(f"Successfully loaded {model_name} ({sum(p.numel() for p in model.parameters()):,} parameters)")
                 
             except Exception as e:
                 logger.error(f"Failed to load model {model_name}: {e}")
-                raise
+                failed_models.append(model_name)
+                # Don't raise immediately, try to load other models
+        
+        if failed_models:
+            if len(failed_models) == len(self.config.models):
+                raise RuntimeError(f"Failed to load all models: {failed_models}")
+            else:
+                logger.warning(f"Failed to load some models: {failed_models}")
+        
+        if len(models) < 2:
+            raise ValueError(f"Need at least 2 models to merge, only loaded {len(models)}")
         
         return models
     
@@ -104,25 +128,49 @@ class BaseMergeMethod(ABC):
             return False
         
         # Check architecture compatibility
-        first_model = next(iter(models.values()))
-        first_config = next(iter(self.model_configs.values()))
+        model_names = list(models.keys())
+        first_model_name = model_names[0]
+        first_config = self.model_configs[first_model_name]
         
-        for model_name, model in models.items():
+        compatibility_issues = []
+        
+        for model_name in model_names[1:]:
             config = self.model_configs[model_name]
             
             # Check hidden dimensions
             if config.hidden_size != first_config.hidden_size:
-                logger.warning(
-                    f"Model {model_name} has different hidden size: "
-                    f"{config.hidden_size} vs {first_config.hidden_size}"
-                )
+                issue = f"Hidden size mismatch: {model_name}({config.hidden_size}) vs {first_model_name}({first_config.hidden_size})"
+                compatibility_issues.append(issue)
+                logger.warning(issue)
             
             # Check number of layers
             if config.num_hidden_layers != first_config.num_hidden_layers:
-                logger.warning(
-                    f"Model {model_name} has different number of layers: "
-                    f"{config.num_hidden_layers} vs {first_config.num_hidden_layers}"
-                )
+                issue = f"Layer count mismatch: {model_name}({config.num_hidden_layers}) vs {first_model_name}({first_config.num_hidden_layers})"
+                compatibility_issues.append(issue)
+                logger.warning(issue)
+            
+            # Check vocabulary size
+            if config.vocab_size != first_config.vocab_size:
+                issue = f"Vocab size mismatch: {model_name}({config.vocab_size}) vs {first_model_name}({first_config.vocab_size})"
+                compatibility_issues.append(issue)
+                logger.warning(issue)
+            
+            # Check attention heads
+            if hasattr(config, 'num_attention_heads') and hasattr(first_config, 'num_attention_heads'):
+                if config.num_attention_heads != first_config.num_attention_heads:
+                    issue = f"Attention heads mismatch: {model_name}({config.num_attention_heads}) vs {first_model_name}({first_config.num_attention_heads})"
+                    compatibility_issues.append(issue)
+                    logger.warning(issue)
+        
+        # For strict merge methods, fail if there are critical incompatibilities
+        if compatibility_issues and self.config.method in ['linear', 'slerp']:
+            logger.error(f"Critical compatibility issues for {self.config.method} merge: {compatibility_issues}")
+            return False
+        
+        if compatibility_issues:
+            logger.warning(f"Found {len(compatibility_issues)} compatibility issues, but merge may still work with {self.config.method}")
+        else:
+            logger.info("All models are compatible")
         
         return True
     
@@ -156,17 +204,59 @@ class BaseMergeMethod(ABC):
     
     def save_merged_model(self, merged_model: nn.Module):
         """Save the merged model."""
+        import os
         from transformers import AutoConfig
         
-        # Use base model config as template
-        base_config = AutoConfig.from_pretrained(
-            self.config.base_model or self.config.models[0]
-        )
-        
-        # Save config
-        base_config.save_pretrained(self.config.output_path)
-        
-        # Save model
-        merged_model.save_pretrained(self.config.output_path)
-        
-        logger.info(f"Saved merged model to {self.config.output_path}")
+        try:
+            # Create output directory if it doesn't exist
+            os.makedirs(self.config.output_path, exist_ok=True)
+            
+            # Use base model config as template
+            base_model_name = self.config.base_model or self.config.models[0]
+            base_config = AutoConfig.from_pretrained(base_model_name, trust_remote_code=False)
+            
+            # Add merge metadata to config
+            base_config.mol_merge_info = {
+                'method': self.config.method,
+                'base_model': base_model_name,
+                'merged_models': self.config.models,
+                'merge_parameters': self.config.parameters,
+                'merge_timestamp': str(torch.utils.data.get_worker_info() or 'unknown')
+            }
+            
+            # Save config
+            config_path = os.path.join(self.config.output_path, 'config.json')
+            base_config.save_pretrained(self.config.output_path)
+            logger.info(f"Saved config to {config_path}")
+            
+            # Save model weights
+            model_path = os.path.join(self.config.output_path, 'pytorch_model.bin')
+            torch.save(merged_model.state_dict(), model_path)
+            logger.info(f"Saved model weights to {model_path}")
+            
+            # Try to save in HuggingFace format if possible
+            try:
+                merged_model.save_pretrained(self.config.output_path)
+                logger.info(f"Saved model in HuggingFace format to {self.config.output_path}")
+            except Exception as e:
+                logger.warning(f"Could not save in HuggingFace format: {e}")
+            
+            # Save merge summary
+            summary_path = os.path.join(self.config.output_path, 'merge_summary.txt')
+            with open(summary_path, 'w') as f:
+                f.write(f"MoL Merge Summary\n")
+                f.write(f"================\n\n")
+                f.write(f"Merge Method: {self.config.method}\n")
+                f.write(f"Base Model: {base_model_name}\n")
+                f.write(f"Merged Models: {', '.join(self.config.models)}\n")
+                f.write(f"Output Path: {self.config.output_path}\n")
+                f.write(f"Parameters: {self.config.parameters}\n")
+                f.write(f"Device: {self.config.device}\n")
+                f.write(f"Data Type: {self.config.dtype}\n")
+            logger.info(f"Saved merge summary to {summary_path}")
+            
+            logger.info(f"Successfully saved merged model to {self.config.output_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save merged model: {e}")
+            raise

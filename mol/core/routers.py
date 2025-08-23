@@ -280,9 +280,26 @@ def compute_router_entropy(router_logits: torch.Tensor) -> torch.Tensor:
     
     Higher entropy indicates more balanced expert usage.
     """
+    # Add small epsilon for numerical stability
+    eps = 1e-8
+    
+    # Apply softmax with temperature for numerical stability
     probs = F.softmax(router_logits, dim=-1)
-    log_probs = F.log_softmax(router_logits, dim=-1)
+    
+    # Clamp probabilities to avoid log(0)
+    probs = torch.clamp(probs, eps, 1.0 - eps)
+    
+    # Compute log probabilities
+    log_probs = torch.log(probs)
+    
+    # Compute entropy: H = -sum(p * log(p))
     entropy = -torch.sum(probs * log_probs, dim=-1)
+    
+    # Handle NaN/inf values
+    entropy = torch.where(torch.isnan(entropy) | torch.isinf(entropy), 
+                         torch.tensor(0.0, device=entropy.device), 
+                         entropy)
+    
     return entropy.mean()
 
 
@@ -295,22 +312,36 @@ def compute_load_balancing_loss(
     
     Penalizes uneven distribution of load across experts.
     """
+    eps = 1e-8
+    
     if attention_mask is not None:
         # Only consider non-masked tokens
-        mask_expanded = attention_mask.unsqueeze(-1).expand_as(expert_weights)
+        mask_expanded = attention_mask.unsqueeze(-1).expand_as(expert_weights).float()
         masked_weights = expert_weights * mask_expanded
         expert_usage = masked_weights.sum(dim=(0, 1))  # [num_experts]
-        total_tokens = attention_mask.sum()
+        total_tokens = attention_mask.sum().float()
     else:
         expert_usage = expert_weights.sum(dim=(0, 1))  # [num_experts]
-        total_tokens = expert_weights.shape[0] * expert_weights.shape[1]
+        total_tokens = float(expert_weights.shape[0] * expert_weights.shape[1])
+    
+    # Avoid division by zero
+    if total_tokens < eps:
+        return torch.tensor(0.0, device=expert_weights.device)
     
     # Normalize by total tokens
-    expert_usage = expert_usage / total_tokens
+    expert_usage = expert_usage / (total_tokens + eps)
     
     # Compute coefficient of variation (std/mean) as load balancing metric
     mean_usage = expert_usage.mean()
+    
+    # Handle case where mean is very small
+    if mean_usage < eps:
+        return torch.tensor(0.0, device=expert_weights.device)
+    
     std_usage = expert_usage.std()
-    load_balance_loss = std_usage / (mean_usage + 1e-8)
+    load_balance_loss = std_usage / (mean_usage + eps)
+    
+    # Clamp to reasonable range
+    load_balance_loss = torch.clamp(load_balance_loss, 0.0, 100.0)
     
     return load_balance_loss
