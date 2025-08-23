@@ -20,6 +20,30 @@ from .merge_methods.base_merge import MergeConfig, BaseMergeMethod
 # Configuration system
 from .config import ConfigParser, ConfigValidator, MergeConfiguration
 
+# Utilities
+try:
+    from .utils.hf_utils import HuggingFacePublisher, push_mol_to_hf
+    HF_AVAILABLE = True
+except ImportError:
+    HuggingFacePublisher = None
+    push_mol_to_hf = None
+    HF_AVAILABLE = False
+
+# SafeTensors support
+try:
+    from .utils.safetensors_utils import (
+        SafeTensorsManager, save_model_safe, load_model_safe, 
+        is_safetensors_available, safetensors_manager
+    )
+    SAFETENSORS_AVAILABLE = True
+except ImportError:
+    SafeTensorsManager = None
+    save_model_safe = None
+    load_model_safe = None
+    is_safetensors_available = lambda: False
+    safetensors_manager = None
+    SAFETENSORS_AVAILABLE = False
+
 # CLI (when imported programmatically)
 try:
     from .cli import merge_cli
@@ -48,4 +72,17 @@ __all__ = [
     "ConfigParser",
     "ConfigValidator",
     "MergeConfiguration",
+    
+    # Hugging Face Integration (optional)
+    "HuggingFacePublisher",
+    "push_mol_to_hf",
+    "HF_AVAILABLE",
+    
+    # SafeTensors Integration (optional)
+    "SafeTensorsManager",
+    "save_model_safe",
+    "load_model_safe",
+    "is_safetensors_available",
+    "safetensors_manager",
+    "SAFETENSORS_AVAILABLE",
 ]

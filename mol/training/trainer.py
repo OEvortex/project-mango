@@ -38,6 +38,7 @@ class TrainingConfig:
     load_balancing_coeff: float = 0.01
     freeze_experts: bool = True
     use_gradient_checkpointing: bool = False
+    use_safetensors: bool = True  # Use SafeTensors by default
     output_dir: str = "./mol_checkpoints"
     run_name: Optional[str] = None
     use_wandb: bool = False
@@ -370,7 +371,9 @@ class MoLTrainer:
         logger.info("Training completed!")
     
     def save_checkpoint(self, is_best: bool = False, is_final: bool = False):
-        """Save training checkpoint."""
+        """Save training checkpoint with SafeTensors support."""
+        from ..utils.safetensors_utils import safetensors_manager
+        
         checkpoint = {
             'global_step': self.global_step,
             'epoch': self.current_epoch,
@@ -385,19 +388,34 @@ class MoLTrainer:
         
         # Determine checkpoint filename
         if is_final:
-            filename = "final_checkpoint.pt"
+            filename = "final_checkpoint"
         elif is_best:
-            filename = "best_checkpoint.pt"
+            filename = "best_checkpoint"
         else:
-            filename = f"checkpoint_step_{self.global_step}.pt"
+            filename = f"checkpoint_step_{self.global_step}"
         
         filepath = self.output_dir / filename
-        torch.save(checkpoint, filepath)
-        logger.info(f"Saved checkpoint to {filepath}")
+        
+        # Save using SafeTensors or PyTorch based on config
+        if self.config.use_safetensors:
+            safetensors_manager.save_checkpoint(checkpoint, filepath, use_safetensors=True)
+            logger.info(f"Saved checkpoint to {filepath}.safetensors using SafeTensors")
+        else:
+            torch.save(checkpoint, filepath.with_suffix('.pt'))
+            logger.info(f"Saved checkpoint to {filepath}.pt using PyTorch")
     
     def load_checkpoint(self, checkpoint_path: str):
-        """Load training checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        """Load training checkpoint with SafeTensors support."""
+        from ..utils.safetensors_utils import safetensors_manager
+        
+        try:
+            # Try SafeTensors first
+            checkpoint = safetensors_manager.load_checkpoint(checkpoint_path, device='cpu')
+            logger.info(f"Loaded checkpoint from {checkpoint_path} using SafeTensors")
+        except (FileNotFoundError, ImportError):
+            # Fallback to PyTorch
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+            logger.info(f"Loaded checkpoint from {checkpoint_path} using PyTorch")
         
         self.mol_runtime.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -408,8 +426,6 @@ class MoLTrainer:
         self.global_step = checkpoint['global_step']
         self.current_epoch = checkpoint['epoch']
         self.best_loss = checkpoint['best_loss']
-        
-        logger.info(f"Loaded checkpoint from {checkpoint_path} (step {self.global_step})")
 
 
 def create_simple_dataset(texts: List[str], tokenizer, max_length: int = 512) -> torch.utils.data.Dataset:

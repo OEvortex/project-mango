@@ -103,6 +103,71 @@ hidden_states, router_stats = mol.forward(
 )
 ```
 
+### Pushing to Hugging Face Hub 🌐
+
+**Install HuggingFace Hub (optional):**
+```bash
+pip install huggingface_hub
+```
+
+**Push MoL models:**
+```python
+# Option 1: Push lightweight MoL runtime (~50-100MB)
+mol.push_to_hf(
+    repo_id="your-username/mol-model",
+    fusion_type="runtime",
+    commit_message="Upload MoL runtime"
+)
+
+# Option 2: Push fully fused static model (~2GB)
+mol.push_to_hf(
+    repo_id="your-username/fused-model", 
+    fusion_type="fused",
+    fusion_method="weighted_average",
+    commit_message="Upload fused model"
+)
+```
+
+**CLI Usage:**
+```bash
+# Push MoL runtime
+mol-merge push-hf your-username/mol-model \
+  --mol-checkpoint ./model.pt \
+  --fusion-type runtime
+
+# Push fully fused model
+mol-merge push-hf your-username/fused-model \
+  --mol-checkpoint ./model.pt \
+  --fusion-type fused \
+  --fusion-method weighted_average
+```
+
+### SafeTensors Support 🔒
+
+**Secure model serialization (recommended):**
+```python
+# SafeTensors enabled by default
+mol.save_checkpoint("./model", use_safetensors=True)
+loaded_mol = MoLRuntime.load_checkpoint("./model")
+
+# Training with SafeTensors
+training_config = TrainingConfig(
+    use_safetensors=True,  # Default: True
+    output_dir="./checkpoints"
+)
+
+# Manual SafeTensors operations
+from mol import save_model_safe, load_model_safe
+save_model_safe(model, "./model", metadata={"version": "1.0"})
+metadata = load_model_safe(model, "./model")
+```
+
+**Benefits:**
+- 🛡️ **Security**: No arbitrary code execution (unlike pickle)
+- ⚡ **Performance**: Faster loading and memory mapping
+- 🔍 **Transparency**: Inspectable file format
+- ✅ **Integrity**: Built-in validation and checksums
+
 ### Training Adapters and Routers
 ```python
 from mol.training.trainer import MoLTrainer, TrainingConfig

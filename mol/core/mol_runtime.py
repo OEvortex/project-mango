@@ -358,33 +358,124 @@ class MoLRuntime(nn.Module):
         
         return generated_ids
     
-    def save_checkpoint(self, path: str):
-        """Save MoL checkpoint."""
+    def save_checkpoint(self, path: str, use_safetensors: bool = True):
+        """
+        Save MoL checkpoint with optional SafeTensors support.
+        
+        Args:
+            path: Path to save checkpoint
+            use_safetensors: Whether to use SafeTensors format for security
+        """
+        from ..utils.safetensors_utils import safetensors_manager
+        
         checkpoint = {
             'config': self.config,
             'target_hidden_dim': self.target_hidden_dim,
             'model_infos': self.model_infos,
-            'state_dict': self.state_dict(),
+            'model_state_dict': self.state_dict(),
         }
         
-        torch.save(checkpoint, path)
-        logger.info(f"Saved MoL checkpoint to {path}")
+        if use_safetensors:
+            safetensors_manager.save_checkpoint(checkpoint, path, use_safetensors=True)
+            logger.info(f"Saved MoL checkpoint to {path} using SafeTensors")
+        else:
+            torch.save(checkpoint, path)
+            logger.info(f"Saved MoL checkpoint to {path} using PyTorch")
     
     @classmethod
     def load_checkpoint(cls, path: str):
-        """Load MoL checkpoint."""
-        checkpoint = torch.load(path, map_location='cpu')
+        """
+        Load MoL checkpoint with SafeTensors support.
+        
+        Args:
+            path: Path to checkpoint file (.safetensors or .pt)
+            
+        Returns:
+            MoL runtime instance
+        """
+        from ..utils.safetensors_utils import safetensors_manager
+        
+        try:
+            # Try SafeTensors first
+            checkpoint = safetensors_manager.load_checkpoint(path, device='cpu')
+            logger.info(f"Loaded MoL checkpoint from {path} using SafeTensors")
+        except (FileNotFoundError, ImportError):
+            # Fallback to PyTorch
+            checkpoint = torch.load(path, map_location='cpu')
+            logger.info(f"Loaded MoL checkpoint from {path} using PyTorch")
         
         # Create runtime with loaded config
         runtime = cls(checkpoint['config'])
         runtime.target_hidden_dim = checkpoint['target_hidden_dim']
         runtime.model_infos = checkpoint['model_infos']
         
-        # Load state dict
-        runtime.load_state_dict(checkpoint['state_dict'])
+        # Load state dict (handle both new and old format)
+        state_dict_key = 'model_state_dict' if 'model_state_dict' in checkpoint else 'state_dict'
+        runtime.load_state_dict(checkpoint[state_dict_key])
         
-        logger.info(f"Loaded MoL checkpoint from {path}")
         return runtime
+    
+    def push_to_hf(
+        self,
+        repo_id: str,
+        fusion_type: str = "runtime",
+        token: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        private: bool = False,
+        create_pr: bool = False,
+        fusion_method: str = "weighted_average"
+    ) -> str:
+        """
+        Push MoL model to Hugging Face Hub.
+        
+        Args:
+            repo_id: Repository ID (username/model-name)
+            fusion_type: "runtime" for lightweight MoL or "fused" for full static model
+            token: HuggingFace API token
+            commit_message: Custom commit message
+            private: Whether to create private repository
+            create_pr: Whether to create pull request
+            fusion_method: Fusion method for "fused" type (weighted_average, best_expert, learned_weights)
+            
+        Returns:
+            Repository URL
+        """
+        from ..utils.hf_utils import HuggingFacePublisher
+        
+        publisher = HuggingFacePublisher(token=token)
+        
+        if fusion_type == "runtime":
+            if commit_message is None:
+                commit_message = f"Upload MoL runtime model ({len(self.config.models)} experts)"
+            return publisher.push_mol_runtime(
+                self, repo_id, commit_message=commit_message,
+                private=private, create_pr=create_pr
+            )
+        elif fusion_type == "fused":
+            if commit_message is None:
+                commit_message = f"Upload fully fused model ({fusion_method})"
+            return publisher.push_fused_model(
+                self, repo_id, commit_message=commit_message,
+                private=private, create_pr=create_pr,
+                fusion_method=fusion_method
+            )
+        else:
+            raise ValueError("fusion_type must be 'runtime' or 'fused'")
+    
+    def create_fused_model(self, fusion_method: str = "weighted_average") -> nn.Module:
+        """
+        Create a fully fused static model from this MoL runtime.
+        
+        Args:
+            fusion_method: Fusion strategy (weighted_average, best_expert, learned_weights)
+            
+        Returns:
+            Fused PyTorch model that can be used independently
+        """
+        from ..utils.hf_utils import HuggingFacePublisher
+        
+        publisher = HuggingFacePublisher()
+        return publisher._create_fused_model(self, fusion_method)
 
 
 class MoLLayer(nn.Module):
