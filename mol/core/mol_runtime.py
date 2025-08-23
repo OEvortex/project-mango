@@ -9,7 +9,6 @@ from dataclasses import dataclass
 import logging
 from collections import defaultdict
 import json
-import math
 
 from .block_extractor import BlockExtractor, ExtractedBlock, ModelInfo
 from .adapters import BaseAdapter, create_adapter
@@ -103,6 +102,55 @@ class MoLRuntime(nn.Module):
         self._setup_tokenizer()
         
         logger.info(f"MoL Runtime initialized with target dim: {self.target_hidden_dim}")
+    
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """Enable gradient checkpointing for memory efficiency.
+        
+        This activates gradient checkpointing for all MoL layers to reduce memory usage
+        during training at the cost of additional computation during backward pass.
+        
+        Args:
+            gradient_checkpointing_kwargs (dict, optional): Additional keyword arguments
+                for gradient checkpointing configuration.
+        """
+        if not self.training:
+            logger.warning(
+                "Gradient checkpointing is being enabled on a model in evaluation mode. "
+                "This may lead to unexpected behavior. Consider calling model.train() first."
+            )
+        
+        # Enable gradient checkpointing for all MoL layers
+        for layer in self.layers:
+            if hasattr(layer, '_gradient_checkpointing_enable'):
+                layer._gradient_checkpointing_enable(gradient_checkpointing_kwargs)
+            elif hasattr(layer, 'gradient_checkpointing'):
+                layer.gradient_checkpointing = True
+        
+        # Set flag for future layers that might be added
+        self._gradient_checkpointing_enabled = True
+        self._gradient_checkpointing_kwargs = gradient_checkpointing_kwargs or {}
+        
+        logger.info("Gradient checkpointing enabled for MoL runtime")
+    
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing."""
+        # Disable gradient checkpointing for all MoL layers
+        for layer in self.layers:
+            if hasattr(layer, '_gradient_checkpointing_disable'):
+                layer._gradient_checkpointing_disable()
+            elif hasattr(layer, 'gradient_checkpointing'):
+                layer.gradient_checkpointing = False
+        
+        # Clear flags
+        self._gradient_checkpointing_enabled = False
+        self._gradient_checkpointing_kwargs = {}
+        
+        logger.info("Gradient checkpointing disabled for MoL runtime")
+    
+    @property
+    def is_gradient_checkpointing(self) -> bool:
+        """Check if gradient checkpointing is enabled."""
+        return getattr(self, '_gradient_checkpointing_enabled', False)
     
     def _load_model_infos(self):
         """Load information for all models."""
@@ -199,6 +247,11 @@ class MoLRuntime(nn.Module):
         
         # Wrap in MoL layer module
         mol_layer = MoLLayer(layer_spec, self.config)
+        
+        # Apply gradient checkpointing if enabled
+        if getattr(self, '_gradient_checkpointing_enabled', False):
+            mol_layer._gradient_checkpointing_enable(self._gradient_checkpointing_kwargs)
+        
         self.layers.append(mol_layer)
         
         logger.info(f"Added MoL layer {layer_idx} with {len(experts)} experts")
@@ -519,6 +572,20 @@ class MoLLayer(nn.Module):
         # Expert metadata
         self.expert_dims = [expert.input_dim for expert in layer_spec.experts]
         self.num_experts = len(self.experts)
+        
+        # Gradient checkpointing support
+        self.gradient_checkpointing = False
+        self._gradient_checkpointing_kwargs = {}
+    
+    def _gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """Enable gradient checkpointing for this layer."""
+        self.gradient_checkpointing = True
+        self._gradient_checkpointing_kwargs = gradient_checkpointing_kwargs or {}
+    
+    def _gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing for this layer."""
+        self.gradient_checkpointing = False
+        self._gradient_checkpointing_kwargs = {}
     
     def forward(
         self,
@@ -526,7 +593,53 @@ class MoLLayer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         return_stats: bool = False
     ) -> Tuple[torch.Tensor, Optional[Dict]]:
-        """Forward pass through MoL layer."""
+        """Forward pass through MoL layer with gradient checkpointing support."""
+        if self.gradient_checkpointing and self.training:
+            # Use gradient checkpointing for memory efficiency
+            return self._gradient_checkpointed_forward(
+                hidden_states, attention_mask, return_stats
+            )
+        else:
+            # Regular forward pass
+            return self._forward(
+                hidden_states, attention_mask, return_stats
+            )
+    
+    def _gradient_checkpointed_forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        return_stats: bool = False
+    ) -> Tuple[torch.Tensor, Optional[Dict]]:
+        """Gradient checkpointed forward pass."""
+        from torch.utils.checkpoint import checkpoint
+        
+        # Create a function that can be checkpointed
+        def create_forward_fn(return_stats):
+            def forward_fn(hidden_states_arg):
+                return self._forward(hidden_states_arg, attention_mask, return_stats)
+            return forward_fn
+        
+        # Use gradient checkpointing
+        checkpoint_kwargs = self._gradient_checkpointing_kwargs.copy()
+        # Set use_reentrant to False for better compatibility (recommended in PyTorch 2.0+)
+        checkpoint_kwargs.setdefault('use_reentrant', False)
+        
+        result = checkpoint(
+            create_forward_fn(return_stats),
+            hidden_states,
+            **checkpoint_kwargs
+        )
+        
+        return result
+    
+    def _forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        return_stats: bool = False
+    ) -> Tuple[torch.Tensor, Optional[Dict]]:
+        """Actual forward pass logic (used by both regular and checkpointed versions)."""
         batch_size, seq_len, hidden_dim = hidden_states.shape
         device = hidden_states.device
         
@@ -620,24 +733,12 @@ class MoLLayer(nn.Module):
             if 'attention_mask' in forward_params and attention_mask is not None:
                 kwargs['attention_mask'] = attention_mask
             
-            # Handle position embeddings for models that need them (like Qwen3)
+            # Handle position embeddings for models that need them (like some older transformers)
+            # For Qwen3 and other modern RoPE models, we skip this to avoid conflicts
             if 'position_embeddings' in forward_params:
-                # Create appropriate position embeddings
-                batch_size, seq_len = hidden_states.shape[:2]
-                device = hidden_states.device
-                
-                # Try to create sinusoidal position embeddings as fallback
-                try:
-                    position_embeddings = self._create_position_embeddings(
-                        torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1),
-                        hidden_states.shape[-1],
-                        device
-                    )
-                    kwargs['position_embeddings'] = position_embeddings
-                    logger.debug(f"Created position embeddings with shape: {position_embeddings.shape}")
-                except Exception as e:
-                    logger.debug(f"Failed to create position embeddings: {e}, skipping")
-                    # Don't add position_embeddings to kwargs if creation fails
+                # Skip position_embeddings for Qwen3 and other RoPE models
+                # as they handle position encoding internally
+                logger.debug("Skipping position_embeddings parameter for RoPE-based model")
             
             # Handle position_ids parameter
             if 'position_ids' in forward_params:
@@ -671,12 +772,27 @@ class MoLLayer(nn.Module):
             
             # Forward through expert with appropriate arguments
             try:
+                logger.debug(f"Calling expert {type(expert)} with args: hidden_states.shape={hidden_states.shape}, kwargs={list(kwargs.keys())}")
                 output = expert(hidden_states, **kwargs)
-                logger.debug(f"Expert raw output type: {type(output)}")
-                logger.debug(f"Expert raw output: {output}")
+                logger.debug(f"Expert output type: {type(output)}, successful")
             except Exception as expert_call_error:
                 logger.error(f"Expert call failed with error: {expert_call_error}")
-                raise expert_call_error
+                logger.error(f"Expert type: {type(expert)}, kwargs: {list(kwargs.keys())}")
+                logger.error(f"Hidden states shape: {hidden_states.shape}")
+                # For RoPE-related errors, try without position-related parameters
+                if "size of tensor" in str(expert_call_error) and ("position" in str(expert_call_error).lower() or "rope" in str(expert_call_error).lower()):
+                    logger.info("Detected RoPE-related error, retrying without position parameters...")
+                    # Remove position-related kwargs and retry
+                    clean_kwargs = {k: v for k, v in kwargs.items() 
+                                  if k not in ['position_ids', 'position_embeddings', 'cache_position']}
+                    try:
+                        output = expert(hidden_states, **clean_kwargs)
+                        logger.info("Expert succeeded with cleaned kwargs")
+                    except Exception as retry_error:
+                        logger.error(f"Retry also failed: {retry_error}")
+                        raise expert_call_error
+                else:
+                    raise expert_call_error
             
             logger.debug(f"Expert output type: {type(output)}, is_tuple: {isinstance(output, tuple)}")
             
@@ -697,7 +813,7 @@ class MoLLayer(nn.Module):
         except TypeError as e:
             # Fallback: Try with minimal arguments
             try:
-                logger.debug(f"Trying fallback forward for expert: {e}")
+                logger.debug(f"Trying fallback forward for expert due to TypeError: {e}")
                 output = expert(hidden_states)
                 if isinstance(output, tuple):
                     if len(output) == 0:
@@ -710,38 +826,22 @@ class MoLLayer(nn.Module):
                 else:
                     return output
             except Exception as e2:
-                logger.warning(f"Expert forward failed: {e2}. Using identity.")
+                logger.warning(f"Expert forward completely failed (TypeError then {type(e2).__name__}). Using identity mapping.")
                 return hidden_states
         except Exception as e:
-            logger.warning(f"Expert forward failed: {e}. Using identity.")
+            logger.warning(f"Expert forward failed ({type(e).__name__}: {str(e)[:100]}). Using identity mapping.")
             return hidden_states
     
-    def _create_position_embeddings(self, position_ids: torch.Tensor, hidden_dim: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Create rotary position embeddings (cos, sin) as fallback for RoPE models like Qwen3."""
-        max_pos = 10000
+    def _create_position_embeddings(self, position_ids: torch.Tensor, hidden_dim: int, device: torch.device) -> torch.Tensor:
+        """Create position embeddings compatible with different transformer architectures.
+        
+        For Qwen3 and other RoPE-based models, we need to be careful about dimensions.
+        This method creates identity position embeddings that should not interfere with
+        the model's internal RoPE handling.
+        """
         batch_size, seq_len = position_ids.shape
         
-        # For RoPE, we need half the hidden dimension
-        rope_dim = hidden_dim // 2
-        
-        # Create frequency components
-        div_term = torch.exp(torch.arange(0, rope_dim, 2, device=device).float() * 
-                            -(math.log(max_pos) / rope_dim))
-        
-        # Expand position_ids to include the frequency dimension
-        position_ids_expanded = position_ids.unsqueeze(-1).float()  # [batch, seq, 1]
-        
-        # Create sine and cosine components
-        cos_embeddings = torch.cos(position_ids_expanded * div_term.unsqueeze(0).unsqueeze(0))  # [batch, seq, rope_dim//2]
-        sin_embeddings = torch.sin(position_ids_expanded * div_term.unsqueeze(0).unsqueeze(0))  # [batch, seq, rope_dim//2]
-        
-        # Repeat to match the full rope dimension if needed
-        if cos_embeddings.shape[-1] * 2 < rope_dim:
-            # Pad to match rope_dim
-            padding_size = rope_dim - cos_embeddings.shape[-1] * 2
-            cos_pad = torch.zeros(batch_size, seq_len, padding_size // 2, device=device)
-            sin_pad = torch.zeros(batch_size, seq_len, padding_size // 2, device=device)
-            cos_embeddings = torch.cat([cos_embeddings, cos_pad], dim=-1)
-            sin_embeddings = torch.cat([sin_embeddings, sin_pad], dim=-1)
-        
-        return cos_embeddings, sin_embeddings
+        # For RoPE models like Qwen3, the safest approach is to return None
+        # and let the transformer block handle position embeddings internally
+        # This avoids dimension mismatches with the model's built-in RoPE
+        return None

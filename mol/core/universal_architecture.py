@@ -175,7 +175,7 @@ class UniversalArchitectureHandler:
         if model_name in self.architecture_cache:
             return self.architecture_cache[model_name]
         
-        logger.info(f"🔍 Detecting architecture for {model_name} (mergekit/vLLM method)")
+        logger.info(f"Detecting architecture for {model_name} (mergekit/vLLM method)")
         
         try:
             # Load model config (transformers' standard approach)
@@ -223,14 +223,14 @@ class UniversalArchitectureHandler:
             self.architecture_cache[model_name] = arch_info
             
             logger.info(
-                f"✅ Detected {arch_info.architecture_type} ({arch_info.architecture_family}) "
+                f"Detected {arch_info.architecture_type} ({arch_info.architecture_family}) "
                 f"with {arch_info.num_layers} layers, hidden_dim={arch_info.hidden_dim}"
             )
             
             return arch_info
             
         except Exception as e:
-            logger.error(f"❌ Failed to detect architecture for {model_name}: {e}")
+            logger.error(f"Failed to detect architecture for {model_name}: {e}")
             raise ValueError(f"Could not detect architecture for {model_name}: {e}")
     
     def _detect_architecture_type(self, config) -> str:
