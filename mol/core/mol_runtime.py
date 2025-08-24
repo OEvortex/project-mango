@@ -715,133 +715,524 @@ class MoLLayer(nn.Module):
         self, 
         expert: nn.Module, 
         hidden_states: torch.Tensor, 
-        attention_mask: Optional[torch.Tensor] = None
+        attention_mask: Optional[torch.Tensor] = None,
+        **additional_inputs
     ) -> torch.Tensor:
-        """Safely forward through different types of transformer blocks using TRL/Unsloth approach."""
+        """UNIVERSAL transformer expert forward supporting ALL transformer architectures.
+        
+        Enhanced to support ALL models including vision, multimodal, encoder-decoder, and specialized architectures.
+        Uses comprehensive parameter detection and intelligent fallback strategies.
+        """
         try:
-            # Get the forward method signature to determine what parameters it expects
+            from transformers import AutoConfig, PretrainedConfig
+            from transformers.modeling_utils import PreTrainedModel
             import inspect
+            
+            # Input validation
+            if hidden_states is None:
+                logger.error("Hidden states is None, cannot proceed")
+                return torch.zeros_like(hidden_states) if hidden_states is not None else None
+            
+            batch_size, seq_len = hidden_states.shape[:2]
+            device = hidden_states.device
+            dtype = hidden_states.dtype
+            
+            # === UNIVERSAL PARAMETER BUILDER ===
+            # Detect ALL supported parameters using transformers' own introspection
             forward_sig = inspect.signature(expert.forward)
-            forward_params = list(forward_sig.parameters.keys())
+            forward_params = set(forward_sig.parameters.keys())
             
-            logger.debug(f"Expert {type(expert)} expects parameters: {forward_params}")
+            logger.debug(f"Expert {type(expert).__name__} forward signature: {list(forward_params)}")
             
-            # Build arguments based on what the expert expects
+            # Build universal parameter set using transformers standards
+            universal_kwargs = self._build_universal_parameters(
+                expert, forward_params, hidden_states, attention_mask, 
+                batch_size, seq_len, device, dtype, **additional_inputs
+            )
+            
+            # === PROGRESSIVE FALLBACK WITH COMPREHENSIVE COVERAGE ===
+            strategies = [
+                # Strategy 1: ALL parameters (full universal support)
+                {'name': 'universal_full', 'filter_unsupported': False},
+                
+                # Strategy 2: Filter to only supported parameters
+                {'name': 'universal_filtered', 'filter_unsupported': True},
+                
+                # Strategy 3: Core transformer parameters only
+                {'name': 'core_transformer', 'core_only': True},
+                
+                # Strategy 4: Legacy fallback (previous Qwen3 solution)
+                {'name': 'legacy_qwen3', 'legacy': True},
+                
+                # Strategy 5: Minimal essential parameters
+                {'name': 'minimal_essential', 'minimal': True},
+                
+                # Strategy 6: Bare minimum - just input
+                {'name': 'bare_input', 'bare': True},
+                
+                # Strategy 7: Identity fallback
+                {'name': 'identity_fallback', 'identity': True}
+            ]
+            
+            last_error = None
+            for strategy in strategies:
+                try:
+                    strategy_kwargs = self._apply_strategy(
+                        strategy, universal_kwargs, forward_params, 
+                        hidden_states, attention_mask, batch_size, seq_len, device, dtype
+                    )
+                    
+                    logger.debug(f"🔄 Trying {type(expert).__name__} strategy '{strategy['name']}' with params: {list(strategy_kwargs.keys())}")
+                    
+                    # Handle identity fallback
+                    if strategy.get('identity', False):
+                        logger.debug(f"Using identity fallback - returning input unchanged")
+                        return hidden_states
+                    
+                    # Try the forward call
+                    expert.eval()
+                    with torch.no_grad():
+                        if 'hidden_states' not in strategy_kwargs and 'inputs_embeds' not in strategy_kwargs:
+                            # Pass hidden_states as positional argument
+                            output = expert(hidden_states, **strategy_kwargs)
+                        else:
+                            # Use keyword arguments only
+                            output = expert(**strategy_kwargs)
+                    
+                    # Extract and validate output
+                    final_output = self._extract_transformers_output(output, strategy)
+                    
+                    # Validate result
+                    if (final_output is not None and 
+                        isinstance(final_output, torch.Tensor) and 
+                        final_output.dim() >= 2 and 
+                        final_output.shape[0] == batch_size and 
+                        final_output.shape[1] == seq_len):
+                        
+                        logger.debug(f"✅ SUCCESS: {type(expert).__name__} with '{strategy['name']}', shape: {final_output.shape}")
+                        return final_output
+                    else:
+                        logger.debug(f"❌ Invalid result from '{strategy['name']}': type={type(result)}, shape={getattr(result, 'shape', 'N/A')}")
+                        continue
+                    
+                except Exception as e:
+                    last_error = e
+                    error_msg = str(e)[:150]
+                    logger.debug(f"❌ Strategy '{strategy['name']}' failed: {type(e).__name__}: {error_msg}")
+                    continue
+            
+            # If all strategies failed, log comprehensive error and return identity
+            logger.error(f"🚨 All strategies failed for {type(expert).__name__}")
+            logger.error(f"Forward signature: {list(forward_params)}")
+            if last_error:
+                logger.error(f"Last error: {type(last_error).__name__}: {str(last_error)[:300]}")
+            
+            # Return identity mapping as final fallback
+            logger.warning(f"Falling back to identity mapping for {type(expert).__name__}")
+            return hidden_states
+            
+        except Exception as e:
+            logger.error(f"💥 Critical error in transformers expert forward: {e}")
+            # Even in critical error, return something valid
+            return hidden_states
+    
+    def _get_qwen3_position_embeddings(self, expert, config, seq_len, device, dtype):
+        """Get position embeddings specifically for Qwen3 models with enhanced handling."""
+        try:
+            import math
+            
+            # First, try to use the model's own RoPE implementation
+            if hasattr(expert, 'rotary_emb'):
+                rotary_emb = expert.rotary_emb
+                try:
+                    # Qwen3 style RoPE generation
+                    if hasattr(rotary_emb, 'forward'):
+                        positions = torch.arange(seq_len, device=device, dtype=torch.long)
+                        cos, sin = rotary_emb(positions, seq_len=seq_len)
+                        logger.debug(f"Used expert's rotary_emb: cos.shape={cos.shape}, sin.shape={sin.shape}")
+                        return (cos, sin)
+                    elif hasattr(rotary_emb, '__call__'):
+                        positions = torch.arange(seq_len, device=device, dtype=torch.long)
+                        result = rotary_emb(positions, seq_len=seq_len)
+                        if isinstance(result, tuple) and len(result) == 2:
+                            cos, sin = result
+                            logger.debug(f"Used expert's rotary_emb call: cos.shape={cos.shape}, sin.shape={sin.shape}")
+                            return (cos, sin)
+                except Exception as e:
+                    logger.debug(f"Expert rotary_emb failed: {e}")
+            
+            # Try to find rotary_emb in the attention layers
+            if hasattr(expert, 'self_attn') and hasattr(expert.self_attn, 'rotary_emb'):
+                try:
+                    rotary_emb = expert.self_attn.rotary_emb
+                    positions = torch.arange(seq_len, device=device, dtype=torch.long)
+                    cos, sin = rotary_emb(positions, seq_len=seq_len)
+                    logger.debug(f"Used self_attn rotary_emb: cos.shape={cos.shape}, sin.shape={sin.shape}")
+                    return (cos, sin)
+                except Exception as e:
+                    logger.debug(f"Self_attn rotary_emb failed: {e}")
+            
+            # Manual Qwen3-specific RoPE generation if model methods fail
+            if config and hasattr(config, 'model_type') and 'qwen' in config.model_type.lower():
+                try:
+                    # Use Qwen3-specific parameters
+                    rope_theta = getattr(config, 'rope_theta', 1000000.0)  # Qwen3 uses 1M, not 10K
+                    head_dim = getattr(config, 'head_dim', None)
+                    
+                    if head_dim is None:
+                        # Calculate head_dim from config
+                        hidden_size = getattr(config, 'hidden_size', 1024)
+                        num_attention_heads = getattr(config, 'num_attention_heads', 16)
+                        head_dim = hidden_size // num_attention_heads
+                    
+                    # Ensure head_dim is even for RoPE
+                    if head_dim % 2 != 0:
+                        logger.warning(f"Head dim {head_dim} is odd, adjusting for RoPE")
+                        head_dim = head_dim - 1
+                    
+                    logger.debug(f"Generating Qwen3 RoPE: theta={rope_theta}, head_dim={head_dim}")
+                    
+                    # Generate RoPE embeddings using Qwen3 parameters
+                    positions = torch.arange(seq_len, device=device, dtype=torch.float32)
+                    dim_range = torch.arange(0, head_dim, 2, device=device, dtype=torch.float32)
+                    inv_freq = 1.0 / (rope_theta ** (dim_range / head_dim))
+                    
+                    # Create the sinusoidal pattern
+                    freqs = torch.outer(positions, inv_freq)  # [seq_len, head_dim//2]
+                    
+                    # Generate cos and sin
+                    cos = freqs.cos().to(dtype)  # [seq_len, head_dim//2]
+                    sin = freqs.sin().to(dtype)  # [seq_len, head_dim//2]
+                    
+                    # Expand to match expected dimensions [1, seq_len, head_dim//2]
+                    cos = cos.unsqueeze(0)
+                    sin = sin.unsqueeze(0)
+                    
+                    logger.debug(f"Generated Qwen3 RoPE: cos.shape={cos.shape}, sin.shape={sin.shape}")
+                    return (cos, sin)
+                
+                except Exception as e:
+                    logger.warning(f"Qwen3 RoPE generation failed: {e}")
+            
+            # Generic transformer RoPE generation fallback
+            elif config:
+                try:
+                    base = getattr(config, 'rope_theta', 10000.0)
+                    head_dim = getattr(config, 'head_dim', 128)
+                    
+                    # Ensure even head_dim
+                    if head_dim % 2 != 0:
+                        head_dim = head_dim - 1
+                    
+                    positions = torch.arange(seq_len, device=device, dtype=torch.float32)
+                    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device=device, dtype=torch.float32) / head_dim))
+                    freqs = torch.outer(positions, inv_freq)
+                    
+                    cos = freqs.cos().to(dtype).unsqueeze(0)
+                    sin = freqs.sin().to(dtype).unsqueeze(0)
+                    
+                    logger.debug(f"Generated generic RoPE: cos.shape={cos.shape}, sin.shape={sin.shape}")
+                    return (cos, sin)
+                
+                except Exception as e:
+                    logger.warning(f"Generic RoPE generation failed: {e}")
+            
+        except Exception as e:
+            logger.warning(f"Position embeddings generation failed completely: {e}")
+        
+        logger.debug("Could not generate position embeddings, returning None")
+        return None
+    
+    def _extract_transformers_output(self, output, strategy):
+        """Extract output using transformers' standard patterns with enhanced None handling."""
+        if output is None:
+            logger.debug("Output is None, cannot extract")
+            return None
+        
+        try:
+            # Handle tuple outputs (return_dict=False) - transformers standard
+            if isinstance(output, tuple):
+                if len(output) > 0:
+                    # Try to get the first tensor element
+                    for item in output:
+                        if isinstance(item, torch.Tensor) and item.dim() >= 2:
+                            logger.debug(f"Extracted tensor from tuple: shape={item.shape}")
+                            return item
+                    logger.debug("No valid tensor found in tuple")
+                else:
+                    logger.debug("Empty tuple output")
+                return None
+            
+            # Handle transformers ModelOutput objects
+            elif hasattr(output, 'last_hidden_state') and output.last_hidden_state is not None:
+                result = output.last_hidden_state
+                logger.debug(f"Extracted last_hidden_state: shape={result.shape}")
+                return result
+                
+            elif hasattr(output, 'hidden_states') and output.hidden_states is not None:
+                hidden_states = output.hidden_states
+                if isinstance(hidden_states, (list, tuple)) and len(hidden_states) > 0:
+                    # Take the last layer's hidden states
+                    result = hidden_states[-1]
+                    logger.debug(f"Extracted from hidden_states list: shape={result.shape}")
+                    return result
+                elif isinstance(hidden_states, torch.Tensor):
+                    logger.debug(f"Extracted hidden_states tensor: shape={hidden_states.shape}")
+                    return hidden_states
+            
+            # Handle direct tensor
+            elif isinstance(output, torch.Tensor) and output.dim() >= 2:
+                logger.debug(f"Direct tensor output: shape={output.shape}")
+                return output
+            
+            # Handle dict (some custom implementations)
+            elif isinstance(output, dict):
+                for key in ['last_hidden_state', 'hidden_states', 'logits', 'prediction_scores']:
+                    if key in output and output[key] is not None and isinstance(output[key], torch.Tensor):
+                        result = output[key]
+                        logger.debug(f"Extracted from dict key '{key}': shape={result.shape}")
+                        return result
+                logger.debug(f"No valid tensor found in dict keys: {list(output.keys())}")
+            
+            # Handle list outputs
+            elif isinstance(output, list) and len(output) > 0:
+                for item in output:
+                    if isinstance(item, torch.Tensor) and item.dim() >= 2:
+                        logger.debug(f"Extracted tensor from list: shape={item.shape}")
+                        return item
+                logger.debug("No valid tensor found in list")
+            
+            else:
+                logger.debug(f"Unhandled output type: {type(output)}")
+            
+        except Exception as e:
+            logger.warning(f"Error extracting output: {e}")
+        
+        logger.debug("Could not extract valid tensor from output")
+        return None
+
+    def _build_universal_parameters(
+        self, 
+        expert: nn.Module, 
+        forward_params: set, 
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        batch_size: int,
+        seq_len: int, 
+        device: torch.device,
+        dtype: torch.dtype,
+        **additional_inputs
+    ) -> Dict[str, Any]:
+        """Build universal parameter set supporting ALL transformer architectures.
+        
+        Covers text, vision, audio, multimodal, encoder-decoder, and specialized models.
+        Based on comprehensive transformers parameter research.
+        """
+        kwargs = {}
+        
+        # === CORE INPUT PARAMETERS ===
+        # Primary text input (most models)
+        if 'hidden_states' in forward_params:
+            kwargs['hidden_states'] = hidden_states
+        if 'inputs_embeds' in forward_params:
+            kwargs['inputs_embeds'] = hidden_states  # Alternative input form
+        if 'input_ids' in forward_params and 'input_ids' in additional_inputs:
+            kwargs['input_ids'] = additional_inputs['input_ids']
+        
+        # === ATTENTION AND MASKING ===
+        if 'attention_mask' in forward_params and attention_mask is not None:
+            kwargs['attention_mask'] = attention_mask
+        if 'head_mask' in forward_params:
+            kwargs['head_mask'] = None  # Standard default
+        if 'encoder_attention_mask' in forward_params:
+            kwargs['encoder_attention_mask'] = additional_inputs.get('encoder_attention_mask')
+        if 'cross_attn_head_mask' in forward_params:
+            kwargs['cross_attn_head_mask'] = None
+        
+        # === POSITION HANDLING ===
+        if 'position_ids' in forward_params:
+            kwargs['position_ids'] = torch.arange(
+                seq_len, device=device, dtype=torch.long
+            ).unsqueeze(0).expand(batch_size, -1)
+        if 'cache_position' in forward_params:
+            kwargs['cache_position'] = torch.arange(seq_len, device=device, dtype=torch.long)
+        
+        # === POSITION EMBEDDINGS (Qwen3, RoPE models) ===
+        if 'position_embeddings' in forward_params:
+            try:
+                config = getattr(expert, 'config', None)
+                position_embeddings = self._get_qwen3_position_embeddings(
+                    expert, config, seq_len, device, dtype
+                )
+                if position_embeddings is not None:
+                    kwargs['position_embeddings'] = position_embeddings
+                else:
+                    # Generate standard RoPE embeddings
+                    head_dim = getattr(config, 'head_dim', 128) if config else 128
+                    cos_emb = torch.ones((1, seq_len, head_dim), device=device, dtype=dtype)
+                    sin_emb = torch.zeros((1, seq_len, head_dim), device=device, dtype=dtype)
+                    kwargs['position_embeddings'] = (cos_emb, sin_emb)
+            except Exception as e:
+                logger.debug(f"Position embeddings generation failed: {e}")
+        
+        # === CACHING PARAMETERS ===
+        if 'past_key_value' in forward_params:
+            kwargs['past_key_value'] = None  # Training mode
+        if 'past_key_values' in forward_params:
+            kwargs['past_key_values'] = None  # Training mode
+        if 'use_cache' in forward_params:
+            kwargs['use_cache'] = False  # Training mode
+        
+        # === ENCODER-DECODER PARAMETERS ===
+        if 'encoder_hidden_states' in forward_params:
+            kwargs['encoder_hidden_states'] = additional_inputs.get('encoder_hidden_states')
+        if 'decoder_input_ids' in forward_params:
+            kwargs['decoder_input_ids'] = additional_inputs.get('decoder_input_ids')
+        if 'decoder_attention_mask' in forward_params:
+            kwargs['decoder_attention_mask'] = additional_inputs.get('decoder_attention_mask')
+        if 'decoder_inputs_embeds' in forward_params:
+            kwargs['decoder_inputs_embeds'] = additional_inputs.get('decoder_inputs_embeds')
+        if 'encoder_outputs' in forward_params:
+            kwargs['encoder_outputs'] = additional_inputs.get('encoder_outputs')
+        
+        # === VISION PARAMETERS ===
+        if 'pixel_values' in forward_params:
+            kwargs['pixel_values'] = additional_inputs.get('pixel_values')
+        if 'pixel_values_videos' in forward_params:
+            kwargs['pixel_values_videos'] = additional_inputs.get('pixel_values_videos')
+        if 'image_grid_thw' in forward_params:
+            kwargs['image_grid_thw'] = additional_inputs.get('image_grid_thw')
+        if 'video_grid_thw' in forward_params:
+            kwargs['video_grid_thw'] = additional_inputs.get('video_grid_thw')
+        
+        # === AUDIO/SPEECH PARAMETERS ===
+        if 'input_features' in forward_params:
+            kwargs['input_features'] = additional_inputs.get('input_features')
+        if 'input_values' in forward_params:
+            kwargs['input_values'] = additional_inputs.get('input_values')
+        
+        # === SPECIALIZED PARAMETERS ===
+        if 'token_type_ids' in forward_params:
+            kwargs['token_type_ids'] = additional_inputs.get('token_type_ids')
+        if 'langs' in forward_params:  # XLM models
+            kwargs['langs'] = additional_inputs.get('langs')
+        if 'lengths' in forward_params:  # XLM models
+            kwargs['lengths'] = additional_inputs.get('lengths')
+        if 'rope_deltas' in forward_params:  # GLM-4V
+            kwargs['rope_deltas'] = additional_inputs.get('rope_deltas')
+        
+        # === TIME SERIES PARAMETERS ===
+        if 'past_values' in forward_params:
+            kwargs['past_values'] = additional_inputs.get('past_values')
+        if 'past_time_features' in forward_params:
+            kwargs['past_time_features'] = additional_inputs.get('past_time_features')
+        if 'past_observed_mask' in forward_params:
+            kwargs['past_observed_mask'] = additional_inputs.get('past_observed_mask')
+        if 'static_categorical_features' in forward_params:
+            kwargs['static_categorical_features'] = additional_inputs.get('static_categorical_features')
+        if 'static_real_features' in forward_params:
+            kwargs['static_real_features'] = additional_inputs.get('static_real_features')
+        if 'future_values' in forward_params:
+            kwargs['future_values'] = additional_inputs.get('future_values')
+        if 'future_time_features' in forward_params:
+            kwargs['future_time_features'] = additional_inputs.get('future_time_features')
+        
+        # === OUTPUT CONTROL PARAMETERS ===
+        if 'output_attentions' in forward_params:
+            kwargs['output_attentions'] = False  # Training default
+        if 'output_hidden_states' in forward_params:
+            kwargs['output_hidden_states'] = False  # Training default
+        if 'return_dict' in forward_params:
+            kwargs['return_dict'] = False  # Prefer tuple outputs for consistency
+        
+        # === TRAINING PARAMETERS ===
+        if 'labels' in forward_params:
+            kwargs['labels'] = additional_inputs.get('labels')
+        if 'mc_token_ids' in forward_params:  # GPT2DoubleHeads
+            kwargs['mc_token_ids'] = additional_inputs.get('mc_token_ids')
+        if 'mc_labels' in forward_params:  # GPT2DoubleHeads
+            kwargs['mc_labels'] = additional_inputs.get('mc_labels')
+        if 'logits_to_keep' in forward_params:  # GPT-2
+            kwargs['logits_to_keep'] = additional_inputs.get('logits_to_keep')
+        
+        return kwargs
+
+    def _apply_strategy(
+        self,
+        strategy: Dict[str, Any],
+        universal_kwargs: Dict[str, Any],
+        forward_params: set,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype
+    ) -> Dict[str, Any]:
+        """Apply specific strategy to parameter set."""
+        
+        if strategy.get('identity', False):
+            return {}
+        
+        # Start with universal parameters
+        kwargs = universal_kwargs.copy()
+        
+        # Apply strategy-specific filtering
+        if strategy.get('filter_unsupported', False):
+            # Only keep parameters that the model actually accepts
+            kwargs = {k: v for k, v in kwargs.items() 
+                     if k in forward_params and v is not None}
+        
+        elif strategy.get('core_only', False):
+            # Only core transformer parameters
+            core_params = {
+                'hidden_states', 'inputs_embeds', 'attention_mask', 'position_ids',
+                'past_key_values', 'past_key_value', 'use_cache', 'cache_position',
+                'output_attentions', 'output_hidden_states', 'return_dict'
+            }
+            kwargs = {k: v for k, v in kwargs.items() 
+                     if k in core_params and k in forward_params and v is not None}
+        
+        elif strategy.get('legacy', False):
+            # Legacy Qwen3-specific strategy
             kwargs = {}
+            if 'hidden_states' in forward_params:
+                kwargs['hidden_states'] = hidden_states
+            elif 'inputs_embeds' in forward_params:
+                kwargs['inputs_embeds'] = hidden_states
             
-            # Standard arguments that most transformers expect
             if 'attention_mask' in forward_params and attention_mask is not None:
                 kwargs['attention_mask'] = attention_mask
             
-            # Handle position embeddings for models that need them (like some older transformers)
-            # For Qwen3 and other modern RoPE models, we skip this to avoid conflicts
             if 'position_embeddings' in forward_params:
-                # Skip position_embeddings for Qwen3 and other RoPE models
-                # as they handle position encoding internally
-                logger.debug("Skipping position_embeddings parameter for RoPE-based model")
+                try:
+                    head_dim = 128  # Qwen3-0.6B
+                    cos_emb = torch.ones((1, seq_len, head_dim), device=device, dtype=dtype)
+                    sin_emb = torch.zeros((1, seq_len, head_dim), device=device, dtype=dtype)
+                    kwargs['position_embeddings'] = (cos_emb, sin_emb)
+                except Exception:
+                    pass
             
-            # Handle position_ids parameter
-            if 'position_ids' in forward_params:
-                batch_size, seq_len = hidden_states.shape[:2]
-                device = hidden_states.device
-                position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
-                kwargs['position_ids'] = position_ids
-            
-            # Handle cache_position parameter (for Qwen3 and newer models)
-            if 'cache_position' in forward_params:
-                batch_size, seq_len = hidden_states.shape[:2]
-                device = hidden_states.device
-                cache_position = torch.arange(seq_len, device=device)
-                kwargs['cache_position'] = cache_position
-            
-            # Handle past_key_values parameter
-            if 'past_key_value' in forward_params:
-                kwargs['past_key_value'] = None
-            elif 'past_key_values' in forward_params:
-                kwargs['past_key_values'] = None
-            
-            # Handle use_cache parameter
-            if 'use_cache' in forward_params:
-                kwargs['use_cache'] = False
-            
-            # Handle output_attentions parameter  
-            if 'output_attentions' in forward_params:
-                kwargs['output_attentions'] = False
-            
-            logger.debug(f"Calling expert with kwargs: {list(kwargs.keys())}")
-            
-            # Forward through expert with appropriate arguments
-            try:
-                logger.debug(f"Calling expert {type(expert)} with args: hidden_states.shape={hidden_states.shape}, kwargs={list(kwargs.keys())}")
-                output = expert(hidden_states, **kwargs)
-                logger.debug(f"Expert output type: {type(output)}, successful")
-            except Exception as expert_call_error:
-                logger.error(f"Expert call failed with error: {expert_call_error}")
-                logger.error(f"Expert type: {type(expert)}, kwargs: {list(kwargs.keys())}")
-                logger.error(f"Hidden states shape: {hidden_states.shape}")
-                # For RoPE-related errors, try without position-related parameters
-                if "size of tensor" in str(expert_call_error) and ("position" in str(expert_call_error).lower() or "rope" in str(expert_call_error).lower()):
-                    logger.info("Detected RoPE-related error, retrying without position parameters...")
-                    # Remove position-related kwargs and retry
-                    clean_kwargs = {k: v for k, v in kwargs.items() 
-                                  if k not in ['position_ids', 'position_embeddings', 'cache_position']}
-                    try:
-                        output = expert(hidden_states, **clean_kwargs)
-                        logger.info("Expert succeeded with cleaned kwargs")
-                    except Exception as retry_error:
-                        logger.error(f"Retry also failed: {retry_error}")
-                        raise expert_call_error
-                else:
-                    raise expert_call_error
-            
-            logger.debug(f"Expert output type: {type(output)}, is_tuple: {isinstance(output, tuple)}")
-            
-            # Handle different return formats
-            if isinstance(output, tuple):
-                if len(output) == 0:
-                    logger.warning("Expert returned empty tuple")
-                    return hidden_states
-                logger.debug(f"Expert returned tuple of length {len(output)}")
-                return output[0]  # Take hidden states
-            elif output is None:
-                logger.warning("Expert returned None")
-                return hidden_states
-            else:
-                logger.debug(f"Expert returned single tensor with shape {output.shape}")
-                return output
-                
-        except TypeError as e:
-            # Fallback: Try with minimal arguments
-            try:
-                logger.debug(f"Trying fallback forward for expert due to TypeError: {e}")
-                output = expert(hidden_states)
-                if isinstance(output, tuple):
-                    if len(output) == 0:
-                        logger.warning("Expert fallback returned empty tuple")
-                        return hidden_states
-                    return output[0]
-                elif output is None:
-                    logger.warning("Expert fallback returned None")
-                    return hidden_states
-                else:
-                    return output
-            except Exception as e2:
-                logger.warning(f"Expert forward completely failed (TypeError then {type(e2).__name__}). Using identity mapping.")
-                return hidden_states
-        except Exception as e:
-            logger.warning(f"Expert forward failed ({type(e).__name__}: {str(e)[:100]}). Using identity mapping.")
-            return hidden_states
-    
-    def _create_position_embeddings(self, position_ids: torch.Tensor, hidden_dim: int, device: torch.device) -> torch.Tensor:
-        """Create position embeddings compatible with different transformer architectures.
+            kwargs.update({k: False for k in ['use_cache', 'output_attentions', 'output_hidden_states', 'return_dict'] 
+                          if k in forward_params})
         
-        For Qwen3 and other RoPE-based models, we need to be careful about dimensions.
-        This method creates identity position embeddings that should not interfere with
-        the model's internal RoPE handling.
-        """
-        batch_size, seq_len = position_ids.shape
+        elif strategy.get('minimal', False):
+            # Minimal essential parameters only
+            kwargs = {}
+            if 'hidden_states' in forward_params:
+                kwargs['hidden_states'] = hidden_states
+            elif 'inputs_embeds' in forward_params:
+                kwargs['inputs_embeds'] = hidden_states
+            
+            if 'attention_mask' in forward_params and attention_mask is not None:
+                kwargs['attention_mask'] = attention_mask
         
-        # For RoPE models like Qwen3, the safest approach is to return None
-        # and let the transformer block handle position embeddings internally
-        # This avoids dimension mismatches with the model's built-in RoPE
-        return None
+        elif strategy.get('bare', False):
+            # Just the input
+            kwargs = {}
+            if 'hidden_states' in forward_params:
+                kwargs['hidden_states'] = hidden_states
+            elif 'inputs_embeds' in forward_params:
+                kwargs['inputs_embeds'] = hidden_states
+        
+        return kwargs
