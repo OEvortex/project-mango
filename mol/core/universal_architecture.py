@@ -18,6 +18,23 @@ from dataclasses import dataclass
 import logging
 import re
 
+# Import our new universal handlers
+try:
+    from .universal_parameter_detector import (
+        UniversalParameterDetector, ModelSignature, universal_parameter_detector
+    )
+    from .universal_rope_handler import (
+        UniversalRoPEHandler, RoPEInfo, universal_rope_handler
+    )
+except ImportError:
+    # Fallback imports for standalone usage
+    from universal_parameter_detector import (
+        UniversalParameterDetector, ModelSignature, universal_parameter_detector
+    )
+    from universal_rope_handler import (
+        UniversalRoPEHandler, RoPEInfo, universal_rope_handler
+    )
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +57,9 @@ class ArchitectureInfo:
     supports_causal_lm: bool
     supports_masked_lm: bool
     requires_remote_code: bool
+    # New enhanced fields
+    model_signature: Optional[ModelSignature] = None  # Parameter signature analysis
+    rope_info: Optional[RoPEInfo] = None              # RoPE information
 
 
 class UniversalArchitectureHandler:
@@ -150,6 +170,10 @@ class UniversalArchitectureHandler:
         self.trust_remote_code = trust_remote_code
         self.architecture_cache: Dict[str, ArchitectureInfo] = {}
         
+        # Initialize enhanced handlers
+        self.parameter_detector = universal_parameter_detector
+        self.rope_handler = universal_rope_handler
+        
         if trust_remote_code:
             logger.warning(
                 "⚠️  trust_remote_code=True enabled. This may execute arbitrary code from model repositories. "
@@ -196,6 +220,25 @@ class UniversalArchitectureHandler:
             embedding_path = self._detect_embedding_path(model, config)
             lm_head_path = self._detect_lm_head_path(model, config)
             
+            # Enhanced detection: Parameter signature and RoPE info
+            model_signature = None
+            rope_info = None
+            
+            if model is not None:
+                try:
+                    # Analyze parameter signature
+                    model_signature = self.parameter_detector.analyze_model_signature(model, model_name)
+                    logger.debug(f"Detected {model_signature.total_param_count} parameters for {model_name}")
+                except Exception as e:
+                    logger.warning(f"Could not analyze parameter signature for {model_name}: {e}")
+                
+                try:
+                    # Detect RoPE information
+                    rope_info = self.rope_handler.detect_rope_info(model, config, model_name)
+                    logger.debug(f"RoPE detection for {model_name}: has_rope={rope_info.has_rope}")
+                except Exception as e:
+                    logger.warning(f"Could not detect RoPE info for {model_name}: {e}")
+            
             # Extract configuration details using transformers' standard attributes
             arch_info = ArchitectureInfo(
                 model_name=model_name,
@@ -216,7 +259,10 @@ class UniversalArchitectureHandler:
                                      getattr(config, 'layernorm_epsilon', 1e-5)),
                 supports_causal_lm=self._supports_causal_lm(config, architecture_family),
                 supports_masked_lm=self._supports_masked_lm(config, architecture_family),
-                requires_remote_code=self._requires_remote_code(model_name, config)
+                requires_remote_code=self._requires_remote_code(model_name, config),
+                # Enhanced fields
+                model_signature=model_signature,
+                rope_info=rope_info
             )
             
             # Cache the result
@@ -889,6 +935,59 @@ class UniversalArchitectureHandler:
         """Clear architecture detection cache."""
         self.architecture_cache.clear()
         logger.info("Cleared architecture detection cache")
+    
+    # Enhanced methods for new capabilities
+    def get_parameter_signature(self, model_name: str) -> Optional[ModelSignature]:
+        """Get parameter signature for a model."""
+        if model_name in self.architecture_cache:
+            return self.architecture_cache[model_name].model_signature
+        return None
+    
+    def get_rope_info(self, model_name: str) -> Optional[RoPEInfo]:
+        """Get RoPE information for a model."""
+        if model_name in self.architecture_cache:
+            return self.architecture_cache[model_name].rope_info
+        return None
+    
+    def analyze_model_capabilities(self, model: nn.Module, model_name: str = None) -> Dict[str, Any]:
+        """Analyze comprehensive model capabilities."""
+        if model_name is None:
+            model_name = model.__class__.__name__
+        
+        capabilities = {
+            'has_attention': False,
+            'has_rope': False,
+            'parameter_count': 0,
+            'primary_input_param': None,
+            'supported_categories': [],
+            'requires_position_embeddings': False
+        }
+        
+        try:
+            # Get architecture info
+            arch_info = self.detect_architecture(model_name)
+            
+            if arch_info.model_signature:
+                capabilities['parameter_count'] = arch_info.model_signature.total_param_count
+                capabilities['primary_input_param'] = self.parameter_detector.get_primary_input_parameter(
+                    arch_info.model_signature
+                )
+                capabilities['supported_categories'] = [
+                    cat.value for cat, params in arch_info.model_signature.parameter_categories.items() 
+                    if params
+                ]
+                capabilities['has_attention'] = bool(
+                    arch_info.model_signature.parameter_categories[self.parameter_detector.ParameterCategory.ATTENTION]
+                )
+            
+            if arch_info.rope_info:
+                capabilities['has_rope'] = arch_info.rope_info.has_rope
+                capabilities['requires_position_embeddings'] = arch_info.rope_info.has_rope
+            
+        except Exception as e:
+            logger.warning(f"Could not analyze capabilities for {model_name}: {e}")
+        
+        return capabilities
 
 
 # Global instance using mergekit/vLLM approach

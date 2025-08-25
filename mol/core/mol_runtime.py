@@ -16,6 +16,19 @@ from .routers import BaseRouter, create_router, compute_router_entropy, compute_
 from ..utils.memory_utils import MemoryManager
 from ..utils.model_utils import ModelUtils
 
+# Import universal handlers to eliminate hardcoded logic
+from .universal_parameter_detector import (
+    UniversalParameterDetector, ModelSignature, ParameterCategory, 
+    universal_parameter_detector
+)
+from .universal_rope_handler import (
+    UniversalRoPEHandler, RoPEInfo, universal_rope_handler
+)
+from .universal_strategy_generator import (
+    UniversalStrategyGenerator, ParameterStrategy, StrategyType,
+    universal_strategy_generator
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +81,11 @@ class MoLRuntime(nn.Module):
         self.block_extractor = BlockExtractor(trust_remote_code=config.trust_remote_code)
         self.memory_manager = MemoryManager()
         self.model_utils = ModelUtils()
+        
+        # Universal handlers to eliminate hardcoded logic
+        self.parameter_detector = universal_parameter_detector
+        self.rope_handler = universal_rope_handler
+        self.strategy_generator = universal_strategy_generator
         
         # Model information
         self.model_infos: Dict[str, ModelInfo] = {}
@@ -750,54 +768,106 @@ class MoLLayer(nn.Module):
                 batch_size, seq_len, device, dtype, **additional_inputs
             )
             
-            # === PROGRESSIVE FALLBACK WITH COMPREHENSIVE COVERAGE ===
-            strategies = [
-                # Strategy 1: ALL parameters (full universal support)
-                {'name': 'universal_full', 'filter_unsupported': False},
+            # === UNIVERSAL STRATEGY GENERATION ===
+            # Generate strategies dynamically based on model signature analysis
+            model_signature = None
+            rope_info = None
+            
+            try:
+                # Analyze model signature dynamically
+                model_signature = self.parameter_detector.analyze_model_signature(
+                    expert, getattr(expert, '_model_name', expert.__class__.__name__)
+                )
+                logger.debug(f"Analyzed {model_signature.total_param_count} parameters for {type(expert).__name__}")
                 
-                # Strategy 2: Filter to only supported parameters
-                {'name': 'universal_filtered', 'filter_unsupported': True},
+                # Get RoPE info
+                rope_info = self.rope_handler.detect_rope_info(
+                    expert, getattr(expert, 'config', None), 
+                    getattr(expert, '_model_name', expert.__class__.__name__)
+                )
                 
-                # Strategy 3: Core transformer parameters only
-                {'name': 'core_transformer', 'core_only': True},
-                
-                # Strategy 4: Legacy fallback (previous Qwen3 solution)
-                {'name': 'legacy_qwen3', 'legacy': True},
-                
-                # Strategy 5: Minimal essential parameters
-                {'name': 'minimal_essential', 'minimal': True},
-                
-                # Strategy 6: Bare minimum - just input
-                {'name': 'bare_input', 'bare': True},
-                
-                # Strategy 7: Identity fallback
-                {'name': 'identity_fallback', 'identity': True}
-            ]
+            except Exception as e:
+                logger.debug(f"Could not analyze model signature: {e}")
+            
+            # Generate strategies based on detected capabilities
+            strategies = []
+            if model_signature:
+                strategies = self.strategy_generator.generate_strategies(model_signature, rope_info)
+            else:
+                # Fallback strategies if signature analysis fails
+                strategies = [
+                    ParameterStrategy(
+                        name="fallback_comprehensive",
+                        strategy_type=StrategyType.COMPREHENSIVE,
+                        description="Fallback comprehensive parameters",
+                        include_categories=set(ParameterCategory),
+                        exclude_categories=set(),
+                        require_primary_input=True,
+                        allow_defaults=True,
+                        filter_none_values=True,
+                        priority=1
+                    ),
+                    ParameterStrategy(
+                        name="fallback_minimal",
+                        strategy_type=StrategyType.MINIMAL,
+                        description="Fallback minimal parameters",
+                        include_categories={ParameterCategory.INPUT},
+                        exclude_categories=set(),
+                        require_primary_input=True,
+                        allow_defaults=False,
+                        filter_none_values=True,
+                        priority=5
+                    ),
+                    ParameterStrategy(
+                        name="fallback_identity",
+                        strategy_type=StrategyType.IDENTITY,
+                        description="Fallback identity",
+                        include_categories=set(),
+                        exclude_categories=set(),
+                        require_primary_input=False,
+                        allow_defaults=False,
+                        filter_none_values=False,
+                        priority=999
+                    )
+                ]
             
             last_error = None
             for strategy in strategies:
                 try:
-                    strategy_kwargs = self._apply_strategy(
-                        strategy, universal_kwargs, forward_params, 
-                        hidden_states, attention_mask, batch_size, seq_len, device, dtype
-                    )
-                    
-                    logger.debug(f"🔄 Trying {type(expert).__name__} strategy '{strategy['name']}' with params: {list(strategy_kwargs.keys())}")
-                    
-                    # Handle identity fallback
-                    if strategy.get('identity', False):
+                    # Build parameters using universal strategy
+                    if strategy.strategy_type == StrategyType.IDENTITY:
                         logger.debug(f"Using identity fallback - returning input unchanged")
                         return hidden_states
                     
-                    # Try the forward call
+                    # Prepare available inputs for strategy
+                    available_inputs = {
+                        'hidden_states': hidden_states,
+                        'inputs_embeds': hidden_states,
+                        'attention_mask': attention_mask,
+                        **additional_inputs
+                    }
+                    
+                    # Build strategy parameters using universal generator
+                    strategy_kwargs = self.strategy_generator.build_strategy_parameters(
+                        strategy=strategy,
+                        model_signature=model_signature,
+                        available_inputs=available_inputs,
+                        rope_info=rope_info,
+                        sequence_length=seq_len,
+                        device=device,
+                        dtype=dtype
+                    )
+                    
+                    logger.debug(f"🔄 Trying {type(expert).__name__} strategy '{strategy.name}' with params: {list(strategy_kwargs.keys())}")
+                    
+                    # Try the forward call with enhanced error handling
                     expert.eval()
                     with torch.no_grad():
-                        if 'hidden_states' not in strategy_kwargs and 'inputs_embeds' not in strategy_kwargs:
-                            # Pass hidden_states as positional argument
-                            output = expert(hidden_states, **strategy_kwargs)
-                        else:
-                            # Use keyword arguments only
+                        if strategy_kwargs:
                             output = expert(**strategy_kwargs)
+                        else:
+                            # For identity or minimal cases
+                            output = expert(hidden_states)
                     
                     # Extract and validate output
                     final_output = self._extract_transformers_output(output, strategy)
@@ -809,16 +879,16 @@ class MoLLayer(nn.Module):
                         final_output.shape[0] == batch_size and 
                         final_output.shape[1] == seq_len):
                         
-                        logger.debug(f"✅ SUCCESS: {type(expert).__name__} with '{strategy['name']}', shape: {final_output.shape}")
+                        logger.debug(f"✅ SUCCESS: {type(expert).__name__} with '{strategy.name}', shape: {final_output.shape}")
                         return final_output
                     else:
-                        logger.debug(f"❌ Invalid result from '{strategy['name']}': type={type(result)}, shape={getattr(result, 'shape', 'N/A')}")
+                        logger.debug(f"❌ Invalid result from '{strategy.name}': type={type(final_output)}, shape={getattr(final_output, 'shape', 'N/A')}")
                         continue
                     
                 except Exception as e:
                     last_error = e
                     error_msg = str(e)[:150]
-                    logger.debug(f"❌ Strategy '{strategy['name']}' failed: {type(e).__name__}: {error_msg}")
+                    logger.debug(f"❌ Strategy '{strategy.name}' failed: {type(e).__name__}: {error_msg}")
                     continue
             
             # If all strategies failed, log comprehensive error and return identity
@@ -836,112 +906,31 @@ class MoLLayer(nn.Module):
             # Even in critical error, return something valid
             return hidden_states
     
-    def _get_qwen3_position_embeddings(self, expert, config, seq_len, device, dtype):
-        """Get position embeddings specifically for Qwen3 models with enhanced handling."""
+    def _generate_universal_position_embeddings(self, expert, config, seq_len, device, dtype):
+        """Generate position embeddings universally without hardcoded logic."""
         try:
-            import math
+            # Get model name for this expert
+            expert_model_name = getattr(expert, '_model_name', None) or expert.__class__.__name__
             
-            # First, try to use the model's own RoPE implementation
-            if hasattr(expert, 'rotary_emb'):
-                rotary_emb = expert.rotary_emb
-                try:
-                    # Qwen3 style RoPE generation
-                    if hasattr(rotary_emb, 'forward'):
-                        positions = torch.arange(seq_len, device=device, dtype=torch.long)
-                        cos, sin = rotary_emb(positions, seq_len=seq_len)
-                        logger.debug(f"Used expert's rotary_emb: cos.shape={cos.shape}, sin.shape={sin.shape}")
-                        return (cos, sin)
-                    elif hasattr(rotary_emb, '__call__'):
-                        positions = torch.arange(seq_len, device=device, dtype=torch.long)
-                        result = rotary_emb(positions, seq_len=seq_len)
-                        if isinstance(result, tuple) and len(result) == 2:
-                            cos, sin = result
-                            logger.debug(f"Used expert's rotary_emb call: cos.shape={cos.shape}, sin.shape={sin.shape}")
-                            return (cos, sin)
-                except Exception as e:
-                    logger.debug(f"Expert rotary_emb failed: {e}")
+            # Detect RoPE info for this expert
+            rope_info = self.rope_handler.detect_rope_info(expert, config, expert_model_name)
             
-            # Try to find rotary_emb in the attention layers
-            if hasattr(expert, 'self_attn') and hasattr(expert.self_attn, 'rotary_emb'):
-                try:
-                    rotary_emb = expert.self_attn.rotary_emb
-                    positions = torch.arange(seq_len, device=device, dtype=torch.long)
-                    cos, sin = rotary_emb(positions, seq_len=seq_len)
-                    logger.debug(f"Used self_attn rotary_emb: cos.shape={cos.shape}, sin.shape={sin.shape}")
-                    return (cos, sin)
-                except Exception as e:
-                    logger.debug(f"Self_attn rotary_emb failed: {e}")
+            if rope_info and rope_info.has_rope:
+                # Use universal RoPE handler
+                rope_result = self.rope_handler.generate_rope_embeddings(
+                    rope_info, seq_len, device, dtype
+                )
+                if rope_result:
+                    logger.debug(f"Generated universal RoPE for {expert_model_name}: {rope_result[0].shape}")
+                    return rope_result
             
-            # Manual Qwen3-specific RoPE generation if model methods fail
-            if config and hasattr(config, 'model_type') and 'qwen' in config.model_type.lower():
-                try:
-                    # Use Qwen3-specific parameters
-                    rope_theta = getattr(config, 'rope_theta', 1000000.0)  # Qwen3 uses 1M, not 10K
-                    head_dim = getattr(config, 'head_dim', None)
-                    
-                    if head_dim is None:
-                        # Calculate head_dim from config
-                        hidden_size = getattr(config, 'hidden_size', 1024)
-                        num_attention_heads = getattr(config, 'num_attention_heads', 16)
-                        head_dim = hidden_size // num_attention_heads
-                    
-                    # Ensure head_dim is even for RoPE
-                    if head_dim % 2 != 0:
-                        logger.warning(f"Head dim {head_dim} is odd, adjusting for RoPE")
-                        head_dim = head_dim - 1
-                    
-                    logger.debug(f"Generating Qwen3 RoPE: theta={rope_theta}, head_dim={head_dim}")
-                    
-                    # Generate RoPE embeddings using Qwen3 parameters
-                    positions = torch.arange(seq_len, device=device, dtype=torch.float32)
-                    dim_range = torch.arange(0, head_dim, 2, device=device, dtype=torch.float32)
-                    inv_freq = 1.0 / (rope_theta ** (dim_range / head_dim))
-                    
-                    # Create the sinusoidal pattern
-                    freqs = torch.outer(positions, inv_freq)  # [seq_len, head_dim//2]
-                    
-                    # Generate cos and sin
-                    cos = freqs.cos().to(dtype)  # [seq_len, head_dim//2]
-                    sin = freqs.sin().to(dtype)  # [seq_len, head_dim//2]
-                    
-                    # Expand to match expected dimensions [1, seq_len, head_dim//2]
-                    cos = cos.unsqueeze(0)
-                    sin = sin.unsqueeze(0)
-                    
-                    logger.debug(f"Generated Qwen3 RoPE: cos.shape={cos.shape}, sin.shape={sin.shape}")
-                    return (cos, sin)
-                
-                except Exception as e:
-                    logger.warning(f"Qwen3 RoPE generation failed: {e}")
-            
-            # Generic transformer RoPE generation fallback
-            elif config:
-                try:
-                    base = getattr(config, 'rope_theta', 10000.0)
-                    head_dim = getattr(config, 'head_dim', 128)
-                    
-                    # Ensure even head_dim
-                    if head_dim % 2 != 0:
-                        head_dim = head_dim - 1
-                    
-                    positions = torch.arange(seq_len, device=device, dtype=torch.float32)
-                    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device=device, dtype=torch.float32) / head_dim))
-                    freqs = torch.outer(positions, inv_freq)
-                    
-                    cos = freqs.cos().to(dtype).unsqueeze(0)
-                    sin = freqs.sin().to(dtype).unsqueeze(0)
-                    
-                    logger.debug(f"Generated generic RoPE: cos.shape={cos.shape}, sin.shape={sin.shape}")
-                    return (cos, sin)
-                
-                except Exception as e:
-                    logger.warning(f"Generic RoPE generation failed: {e}")
+            # If no RoPE detected, return None
+            logger.debug(f"No RoPE detected for {expert_model_name}")
+            return None
             
         except Exception as e:
-            logger.warning(f"Position embeddings generation failed completely: {e}")
-        
-        logger.debug("Could not generate position embeddings, returning None")
-        return None
+            logger.debug(f"Universal position embeddings generation failed: {e}")
+            return None
     
     def _extract_transformers_output(self, output, strategy):
         """Extract output using transformers' standard patterns with enhanced None handling."""
@@ -1057,18 +1046,21 @@ class MoLLayer(nn.Module):
         if 'cache_position' in forward_params:
             kwargs['cache_position'] = torch.arange(seq_len, device=device, dtype=torch.long)
         
-        # === POSITION EMBEDDINGS (Qwen3, RoPE models) ===
+        # === POSITION EMBEDDINGS (Universal RoPE handling) ===
         if 'position_embeddings' in forward_params:
             try:
                 config = getattr(expert, 'config', None)
-                position_embeddings = self._get_qwen3_position_embeddings(
+                position_embeddings = self._generate_universal_position_embeddings(
                     expert, config, seq_len, device, dtype
                 )
                 if position_embeddings is not None:
                     kwargs['position_embeddings'] = position_embeddings
                 else:
-                    # Generate standard RoPE embeddings
-                    head_dim = getattr(config, 'head_dim', 128) if config else 128
+                    # Generate fallback position embeddings if needed
+                    logger.debug("Generating fallback position embeddings")
+                    head_dim = 128  # Reasonable default
+                    if config and hasattr(config, 'hidden_size') and hasattr(config, 'num_attention_heads'):
+                        head_dim = config.hidden_size // config.num_attention_heads
                     cos_emb = torch.ones((1, seq_len, head_dim), device=device, dtype=dtype)
                     sin_emb = torch.zeros((1, seq_len, head_dim), device=device, dtype=dtype)
                     kwargs['position_embeddings'] = (cos_emb, sin_emb)
@@ -1157,82 +1149,5 @@ class MoLLayer(nn.Module):
         
         return kwargs
 
-    def _apply_strategy(
-        self,
-        strategy: Dict[str, Any],
-        universal_kwargs: Dict[str, Any],
-        forward_params: set,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor],
-        batch_size: int,
-        seq_len: int,
-        device: torch.device,
-        dtype: torch.dtype
-    ) -> Dict[str, Any]:
-        """Apply specific strategy to parameter set."""
-        
-        if strategy.get('identity', False):
-            return {}
-        
-        # Start with universal parameters
-        kwargs = universal_kwargs.copy()
-        
-        # Apply strategy-specific filtering
-        if strategy.get('filter_unsupported', False):
-            # Only keep parameters that the model actually accepts
-            kwargs = {k: v for k, v in kwargs.items() 
-                     if k in forward_params and v is not None}
-        
-        elif strategy.get('core_only', False):
-            # Only core transformer parameters
-            core_params = {
-                'hidden_states', 'inputs_embeds', 'attention_mask', 'position_ids',
-                'past_key_values', 'past_key_value', 'use_cache', 'cache_position',
-                'output_attentions', 'output_hidden_states', 'return_dict'
-            }
-            kwargs = {k: v for k, v in kwargs.items() 
-                     if k in core_params and k in forward_params and v is not None}
-        
-        elif strategy.get('legacy', False):
-            # Legacy Qwen3-specific strategy
-            kwargs = {}
-            if 'hidden_states' in forward_params:
-                kwargs['hidden_states'] = hidden_states
-            elif 'inputs_embeds' in forward_params:
-                kwargs['inputs_embeds'] = hidden_states
-            
-            if 'attention_mask' in forward_params and attention_mask is not None:
-                kwargs['attention_mask'] = attention_mask
-            
-            if 'position_embeddings' in forward_params:
-                try:
-                    head_dim = 128  # Qwen3-0.6B
-                    cos_emb = torch.ones((1, seq_len, head_dim), device=device, dtype=dtype)
-                    sin_emb = torch.zeros((1, seq_len, head_dim), device=device, dtype=dtype)
-                    kwargs['position_embeddings'] = (cos_emb, sin_emb)
-                except Exception:
-                    pass
-            
-            kwargs.update({k: False for k in ['use_cache', 'output_attentions', 'output_hidden_states', 'return_dict'] 
-                          if k in forward_params})
-        
-        elif strategy.get('minimal', False):
-            # Minimal essential parameters only
-            kwargs = {}
-            if 'hidden_states' in forward_params:
-                kwargs['hidden_states'] = hidden_states
-            elif 'inputs_embeds' in forward_params:
-                kwargs['inputs_embeds'] = hidden_states
-            
-            if 'attention_mask' in forward_params and attention_mask is not None:
-                kwargs['attention_mask'] = attention_mask
-        
-        elif strategy.get('bare', False):
-            # Just the input
-            kwargs = {}
-            if 'hidden_states' in forward_params:
-                kwargs['hidden_states'] = hidden_states
-            elif 'inputs_embeds' in forward_params:
-                kwargs['inputs_embeds'] = hidden_states
-        
-        return kwargs
+    # The old _apply_strategy method has been completely replaced by the
+    # universal strategy generation system. No more hardcoded logic!
