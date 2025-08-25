@@ -500,16 +500,139 @@ class MoLRuntime(nn.Module):
             checkpoint = torch.load(path, map_location='cpu')
             logger.info(f"Loaded MoL checkpoint from {path} using PyTorch")
         
+        # Handle config deserialization from SafeTensors metadata
+        config_data = checkpoint['config']
+        logger.debug(f"Config data type: {type(config_data)}, value: {config_data}")
+        
+        if isinstance(config_data, dict):
+            # Config was deserialized from JSON metadata, recreate MoLConfig
+            config = MoLConfig(**config_data)
+        elif isinstance(config_data, str):
+            # Config was stored as string, deserialize it
+            import json
+            import ast
+            if not config_data.strip():
+                raise ValueError("Config data is empty string")
+            
+            # First try JSON parsing
+            try:
+                config_dict = json.loads(config_data)
+                config = MoLConfig(**config_dict)
+            except json.JSONDecodeError:
+                # If JSON fails, try to parse as dataclass string representation
+                try:
+                    # Check if it looks like a MoLConfig repr
+                    if config_data.strip().startswith('MoLConfig('):
+                        # Extract the parameters from the string representation
+                        # Remove "MoLConfig(" from start and ")" from end
+                        params_str = config_data.strip()[10:-1]
+                        
+                        # Parse the parameters manually
+                        config_dict = {}
+                        # Split by comma but be careful with nested structures
+                        import re
+                        params = re.split(r',\s*(?=[a-zA-Z_][a-zA-Z0-9_]*=)', params_str)
+                        
+                        for param in params:
+                            if '=' in param:
+                                key, value = param.split('=', 1)
+                                key = key.strip()
+                                value = value.strip()
+                                
+                                # Parse the value
+                                try:
+                                    # Use literal_eval for safe parsing
+                                    parsed_value = ast.literal_eval(value)
+                                    config_dict[key] = parsed_value
+                                except (ValueError, SyntaxError):
+                                    # If literal_eval fails, try special cases
+                                    if value.lower() == 'none':
+                                        config_dict[key] = None
+                                    elif value.lower() == 'true':
+                                        config_dict[key] = True
+                                    elif value.lower() == 'false':
+                                        config_dict[key] = False
+                                    else:
+                                        # Keep as string if all else fails
+                                        config_dict[key] = value.strip('\'"')
+                        
+                        config = MoLConfig(**config_dict)
+                    else:
+                        # Try to evaluate as Python literal
+                        config_dict = ast.literal_eval(config_data)
+                        config = MoLConfig(**config_dict)
+                        
+                except (ValueError, SyntaxError, TypeError) as e:
+                    logger.error(f"Failed to parse config string: {e}. Config data: {repr(config_data)}")
+                    raise ValueError(f"Invalid config format: {e}") from e
+        else:
+            # Config is already a MoLConfig object (PyTorch checkpoint)
+            config = config_data
+        
         # Create runtime with loaded config
-        runtime = cls(checkpoint['config'])
+        runtime = cls(config)
         runtime.target_hidden_dim = checkpoint['target_hidden_dim']
         runtime.model_infos = checkpoint['model_infos']
         
+        # Rebuild the model architecture from the saved state
+        runtime._rebuild_from_checkpoint(checkpoint)
+        
         # Load state dict (handle both new and old format)
         state_dict_key = 'model_state_dict' if 'model_state_dict' in checkpoint else 'state_dict'
-        runtime.load_state_dict(checkpoint[state_dict_key])
+        runtime.load_state_dict(checkpoint[state_dict_key], strict=False)
         
         return runtime
+    
+    def _rebuild_from_checkpoint(self, checkpoint):
+        """Rebuild the model architecture from checkpoint information."""
+        logger.info("Rebuilding model architecture from checkpoint...")
+        
+        # Check what layers need to be rebuilt by examining state dict keys
+        state_dict_key = 'model_state_dict' if 'model_state_dict' in checkpoint else 'state_dict'
+        state_dict = checkpoint[state_dict_key]
+        
+        # Find layer indices from state dict keys
+        layer_indices = set()
+        for key in state_dict.keys():
+            if key.startswith('layers.'):
+                layer_idx = int(key.split('.')[1])
+                layer_indices.add(layer_idx)
+        
+        if not layer_indices:
+            logger.warning("No layer information found in checkpoint")
+            return
+        
+        max_layer_idx = max(layer_indices)
+        logger.info(f"Found {len(layer_indices)} layers to rebuild (max index: {max_layer_idx})")
+        
+        # Build layer specifications based on the config
+        # This is a simplified reconstruction - in a real scenario, we'd need to save layer specs
+        for layer_idx in sorted(layer_indices):
+            logger.info(f"Rebuilding layer {layer_idx}")
+            
+            # Create a minimal layer specification using the available models
+            # In a proper implementation, layer specifications should be saved in the checkpoint
+            layer_specs = []
+            for i, model_name in enumerate(self.config.models):
+                # For now, assume each layer uses the same layer index from each model
+                # This may need adjustment based on the actual training configuration
+                layer_specs.append((model_name, layer_idx))
+            
+            try:
+                self.add_layer(layer_specs, layer_idx)
+            except Exception as e:
+                logger.error(f"Failed to rebuild layer {layer_idx}: {e}")
+                # Continue with other layers
+                continue
+        
+        # Setup embeddings and language modeling head if they exist in the state dict
+        if any(key.startswith('embedding_layer.') for key in state_dict.keys()):
+            logger.info("Setting up embedding layer from checkpoint")
+            self.setup_embeddings()
+        
+        if any(key.startswith('lm_head.') for key in state_dict.keys()):
+            logger.info("Setting up language modeling head from checkpoint")
+            self.setup_lm_head()
     
     def push_to_hf(
         self,

@@ -19,7 +19,7 @@ def training_example():
         models=['Qwen/Qwen3-0.6B', 'suayptalha/Qwen3-0.6B-Medical-Expert'],
         adapter_type="linear",
         router_type="simple",
-        max_layers=2,  # Only use 2 layers for quick training demo
+        max_layers=7,  # Only use 7 layers for quick training demo
         temperature=1.0,
         entropy_penalty_coeff=0.1,
         load_balancing_coeff=0.01,
@@ -61,24 +61,84 @@ def training_example():
     
     # Add fusion layers
     print("\n🔧 Adding MoL fusion layers...")
-    
-    # Layer 0: Mix early layers from both models
+
+    # Add 7 layers, mixing layers from both models for diversity
     mol_runtime.add_layer([
         ("suayptalha/Qwen3-0.6B-Medical-Expert", 0),
         ("Qwen/Qwen3-0.6B", 0)
     ], layer_idx=0)
-    
-    # Layer 1: Mix different layers for diversity
     mol_runtime.add_layer([
-        ("suayptalha/Qwen3-0.6B-Medical-Expert", 2),
+        ("suayptalha/Qwen3-0.6B-Medical-Expert", 1),
         ("Qwen/Qwen3-0.6B", 1)
     ], layer_idx=1)
-    
+    mol_runtime.add_layer([
+        ("suayptalha/Qwen3-0.6B-Medical-Expert", 2),
+        ("Qwen/Qwen3-0.6B", 2)
+    ], layer_idx=2)
+    mol_runtime.add_layer([
+        ("suayptalha/Qwen3-0.6B-Medical-Expert", 3),
+        ("Qwen/Qwen3-0.6B", 3)
+    ], layer_idx=3)
+    mol_runtime.add_layer([
+        ("suayptalha/Qwen3-0.6B-Medical-Expert", 4),
+        ("Qwen/Qwen3-0.6B", 4)
+    ], layer_idx=4)
+    mol_runtime.add_layer([
+        ("suayptalha/Qwen3-0.6B-Medical-Expert", 5),
+        ("Qwen/Qwen3-0.6B", 5)
+    ], layer_idx=5)
+    mol_runtime.add_layer([
+        ("suayptalha/Qwen3-0.6B-Medical-Expert", 6),
+        ("Qwen/Qwen3-0.6B", 6)
+    ], layer_idx=6)
+
     print(f"Added {len(mol_runtime.layers)} MoL layers")
     
     # Create simple training data
     print("\n📚 Creating training dataset...")
     train_texts = [
+        # Medical-related questions and statements
+        "What are the symptoms of diabetes?",
+        "How is hypertension diagnosed?",
+        "What causes chest pain in patients?",
+        "Explain the treatment for pneumonia.",
+        "What are the side effects of antibiotics?",
+        "How does the cardiovascular system work?",
+        "What is the difference between type 1 and type 2 diabetes?",
+        "How should wounds be properly cleaned?",
+        "What are the signs of a heart attack?",
+        "Explain how vaccines work in the body.",
+        "What causes high blood pressure?",
+        "How is cancer typically treated?",
+        "What are the symptoms of COVID-19?",
+        "How does the immune system fight infections?",
+        "What is the purpose of physical therapy?",
+        "Explain the importance of regular checkups.",
+        "How do pain medications work?",
+        "What are the risks of smoking?",
+        "How is blood pressure measured?",
+        "What causes allergic reactions?",
+        "How do antidepressants affect the brain?",
+        "What is the role of nutrition in health?",
+        "How are broken bones treated?",
+        "What causes kidney stones?",
+        "How does anesthesia work during surgery?",
+        "What are the symptoms of stroke?",
+        "How is diabetes managed daily?",
+        "What causes migraine headaches?",
+        "How do antibiotics fight bacterial infections?",
+        "What is the importance of sleep for health?",
+        "How are mental health disorders diagnosed?",
+        "What causes heart disease?",
+        "How do muscles grow and repair?",
+        "What are the benefits of exercise?",
+        "How does the digestive system process food?",
+        "What causes asthma attacks?",
+        "How are chronic diseases managed?",
+        "What is the role of genetics in disease?",
+        "How do hormones affect the body?",
+        "What causes inflammation in tissues?",
+        # General questions and statements
         "Hello, how are you today?",
         "What is your favorite color?",
         "Tell me about artificial intelligence.",
@@ -115,81 +175,37 @@ def training_example():
         "User experience design focuses on usability.",
         "Digital marketing reaches customers online.",
         "Cryptocurrency offers alternative payment methods.",
-        "Artificial neural networks learn from data.",
-        "Machine learning algorithms improve with experience.",
-        "Deep learning uses multi-layered neural networks.",
-        "Natural language understanding processes human speech.",
-        "Computer graphics create realistic visual effects.",
-        "Distributed systems handle large-scale computing.",
-        "Information security prevents unauthorized access.",
-        "Software testing ensures application quality.",
-        "Version control systems track code changes.",
-        "Agile methodology emphasizes iterative development.",
-        "DevOps practices integrate development and operations.",
-        "Cloud services provide on-demand computing resources.",
-        "Microservices architecture promotes modular design.",
-        "API development enables system integration.",
-        "Data visualization makes information accessible.",
-        "Statistical analysis reveals data insights.",
-        "Predictive modeling forecasts future trends.",
-        "Time series analysis examines temporal patterns.",
-        "Regression analysis studies variable relationships.",
-        "Classification algorithms categorize data points.",
-        "Clustering techniques group similar items.",
-        "Recommendation systems suggest relevant content.",
-        "Search engines index and retrieve information.",
-        "Operating systems manage computer resources.",
-        "Network protocols enable communication standards.",
-        "Distributed computing spreads workload across systems.",
-        "Parallel processing executes tasks simultaneously.",
-        "Concurrent programming handles multiple threads.",
-        "Functional programming emphasizes pure functions.",
-        "Object-oriented programming organizes code into classes.",
-        "Procedural programming follows step-by-step instructions.",
-        "Dynamic programming optimizes recursive solutions.",
-        "Algorithm design creates efficient problem-solving methods.",
-        "Data structures organize information systematically.",
-        "Computational complexity measures algorithm efficiency.",
-        "Graph theory studies network relationships.",
-        "Linear algebra provides mathematical foundations.",
-        "Calculus enables optimization and analysis.",
-        "Statistics supports data-driven decision making.",
-        "Probability theory models uncertain events.",
-        "Digital signal processing manipulates electronic signals.",
-        "Image processing enhances and analyzes pictures.",
-        "Audio processing handles sound and music.",
-        "Video processing manages moving images.",
-        "Computer animation creates lifelike movements.",
-        "3D modeling builds virtual three-dimensional objects.",
-        "Simulation software models real-world phenomena.",
-        "Mathematical modeling describes complex systems.",
-        "Optimization algorithms find best solutions.",
-        "Heuristic methods provide approximate solutions.",
-        "Genetic algorithms evolve solutions over generations.",
-        "Swarm intelligence mimics collective behavior.",
-        "Reinforcement learning learns through trial and error.",
-        "Supervised learning uses labeled training data.",
-        "Unsupervised learning discovers hidden patterns.",
-        "Semi-supervised learning combines labeled and unlabeled data.",
-        "Transfer learning applies knowledge across domains.",
-        "Few-shot learning works with limited examples.",
-        "Zero-shot learning generalizes without specific training.",
-        "Multi-task learning handles multiple objectives simultaneously.",
-        "Ensemble methods combine multiple model predictions.",
-        "Cross-validation evaluates model performance reliably.",
-        "Hyperparameter tuning optimizes model configuration.",
-        "Feature engineering creates informative input variables.",
-        "Data preprocessing cleans and prepares datasets.",
-        "Exploratory data analysis reveals initial insights.",
-        "Statistical inference draws conclusions from samples.",
-        "Hypothesis testing validates scientific claims.",
-        "Experimental design controls for confounding variables."
+        "What is the meaning of life?",
+        "How do airplanes fly through the sky?",
+        "Why do seasons change throughout the year?",
+        "What makes music sound pleasant to humans?",
+        "How do computers process information so quickly?",
+        "What causes earthquakes and natural disasters?",
+        "Why do people have different personality types?",
+        "How does the internet connect the world?",
+        "What makes some foods taste better than others?",
+        "Why do we dream during sleep?",
+        "How do plants convert sunlight into energy?",
+        "What causes ocean tides to rise and fall?",
+        "Why do different cultures have unique traditions?",
+        "How do satellites orbit around Earth?",
+        "What makes some materials conduct electricity better?",
+        "Why do people learn languages at different rates?",
+        "How do movies create special effects?",
+        "What causes different weather patterns globally?",
+        "Why do some animals migrate long distances?",
+        "How do telescopes help us see distant stars?"
     ]
     
     eval_texts = [
+        # Mix of medical and general evaluation texts
+        "What are the symptoms of fever?",
         "How do you feel about this?",
+        "What causes headaches in patients?",
         "What do you think about that?",
+        "How is blood pressure controlled?",
         "Science is interesting to study.",
+        "What are the benefits of vaccination?",
         "AI will change the world."
     ]
     
@@ -234,7 +250,7 @@ def training_example():
         
         # Test generation after training
         print("\n🎭 Testing generation after training...")
-        test_text = "Hello, how are you"
+        test_text = "Yooo, how are u?"
         inputs = mol_runtime.tokenizer(
             test_text, 
             return_tensors="pt", 
@@ -258,6 +274,23 @@ def training_example():
                 
             except Exception as e:
                 print(f"Generation failed (expected for demo): {e}")
+        
+        # Save the trained model
+        print("\n💾 Saving trained model...")
+        try:
+            # Save using MoLRuntime's built-in checkpoint method
+            save_path = "./mol_trained_model"
+            mol_runtime.save_checkpoint(save_path, use_safetensors=True)
+            print(f"✅ Model saved successfully to {save_path}.safetensors")
+            
+            # Also save the final trainer checkpoint for full training state
+            trainer.save_checkpoint(is_final=True)
+            print(f"✅ Final training checkpoint saved to {training_config.output_dir}")
+            
+        except Exception as save_error:
+            print(f"⚠️ Save failed: {save_error}")
+            import traceback
+            traceback.print_exc()
         
         return trainer
         

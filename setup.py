@@ -9,7 +9,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="project-mango-mol",
     version="0.1.0-beta",
-    author="Project Mango Team",
+    author="HelpingAI",
     description="Modular Layer (MoL) system for fusing transformer blocks from different LLMs (Beta Testing)",
     long_description=long_description,
     long_description_content_type="text/markdown",
